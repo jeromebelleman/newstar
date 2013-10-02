@@ -3,14 +3,36 @@
 import os, sys
 from os.path import expanduser
 from subprocess import Popen, PIPE
+import time
 import cmd
 import argparse, shlex
 import getpass
+import threading, Queue
 import yaml
 
+def showworker(vms, inqueue, outqueue):
+    while True:
+        server = inqueue.get()
+
+        os.environ['OS_AUTH_URL'], \
+        os.environ['OS_TENANT_ID'], \
+        os.environ['OS_TENANT_NAME'] = vms[server]
+
+        proc = Popen(['nova', 'show', server], stdout=PIPE)
+        outqueue.put(proc.stdout.read())
+        inqueue.task_done()
+
+def printworker(outqueue):
+    while True:
+        output = outqueue.get()
+        print output
+        outqueue.task_done()
+
 class Cli(cmd.Cmd):
-    def __init__(self):
+    def __init__(self, args):
         cmd.Cmd.__init__(self)
+
+        self.time = args.time
 
         # Set prompt and window title
         self.prompt = 'nova% '
@@ -20,30 +42,49 @@ class Cli(cmd.Cmd):
         self.listparser = argparse.ArgumentParser()
         self.listparser.add_argument('-v', '--verbose', action='store_true')
 
+        self.showparser = argparse.ArgumentParser()
+        self.showparser.add_argument('-v', '--verbose', action='store_true')
+        self.showparser.add_argument('server', nargs='+')
+
         # Common setup
         os.environ['OS_CACERT'] = '/path/to/certificate.pem'
+
+        # Initialise VM-tenant mapping
+        self.vms = {}
 
         # Tenant files
         self.services = yaml.load(open(expanduser('~/.newstar.yaml')))
 
-    def do_list(self, line):
-        # Parse arguments
-        try:
-            args = self.listparser.parse_args(shlex.split(line))
-        except SystemExit:
-            return
+        # Start threads to permanently pull VMs to show the info of
+        self.inqueue = Queue.Queue()
+        self.outqueue = Queue.Queue()
+        for _ in range(16): # 16 seems to be the optimal balance
+            thread = threading.Thread(target=showworker,
+                                      args=(self.vms,
+                                            self.inqueue,
+                                            self.outqueue))
+            thread.daemon = True # Stop thread when parent process ends
+            thread.start()
 
+        # Printer thread
+        thread = threading.Thread(target=printworker, args=(self.outqueue,))
+        thread.daemon = True
+        thread.start()
+
+    def _authck(self):
         # Check authentication
         if 'OS_USERNAME' not in os.environ and 'OS_PASSWORD' not in os.environ:
             print >> sys.stderr, "You need to authenticate first"
-            return
-        
-        # List VMs in all tenants of all OpenStack services
+            return False
+        else:
+            return True
+
+    def _list(self, doprint, verbose=False):
         for service in self.services:
             os.environ['OS_AUTH_URL'] = self.services[service]['url']
             tenants = self.services[service]['tenants']
             for tenant in tenants:
-                if args.verbose:
+                if verbose:
                     print "%s in %s:" % (tenant['name'], service.capitalize())
 
                 # Set tenant
@@ -53,23 +94,77 @@ class Cli(cmd.Cmd):
                 # Run nova
                 proc = Popen(['nova', 'list'], stdout=PIPE)
 
-                if not args.verbose:
-                    # Skip header
-                    for _ in range(2):
-                        proc.stdout.next()
+                # Handle header
+                if not verbose:
+                    try:
+                        # Skip header
+                        for _ in range(2):
+                            proc.stdout.next()
+                    except StopIteration:
+                        continue
 
                 # Print VMs
                 for line in proc.stdout:
-                    if args.verbose:
+                    if verbose:
                         print line,
                     else:
                         try:
-                            print line.split('|')[2].strip()
+                            server = line.split('|')[2].strip()
+                            self.vms[server] = os.environ['OS_AUTH_URL'], \
+                                               os.environ['OS_TENANT_ID'], \
+                                               os.environ['OS_TENANT_NAME']
+                            if doprint:
+                                print server
                         except IndexError:
                             pass
 
-                if args.verbose:
+                if verbose:
                     print
+
+    def emptyline(self):
+        pass
+
+    def do_show(self, line):
+        # Parse arguments
+        try:
+            args = self.showparser.parse_args(shlex.split(line))
+        except SystemExit:
+            return
+
+        if not self._authck():
+            return
+
+        # Update VM-tenant mapping
+        self._list(False)
+
+        # Collect requested servers into queue
+        for server in args.server:
+            self.inqueue.put(server)
+
+        # Wait until queue is drained
+        t0 = time.time()
+        self.inqueue.join()
+        self.outqueue.join()
+        if self.time:
+            print time.time() - t0
+
+        # Print out results
+        while not self.outqueue.empty():
+            output = self.outqueue.get()
+            print output
+
+    def do_list(self, line):
+        # Parse arguments
+        try:
+            args = self.listparser.parse_args(shlex.split(line))
+        except SystemExit:
+            return
+
+        if not self._authck():
+            return
+
+        # List VMs in all tenants of all OpenStack services
+        self._list(True, args.verbose)
 
     def do_authenticate(self, line):
         os.environ['OS_USERNAME'] = raw_input('login: ')
@@ -80,7 +175,10 @@ class Cli(cmd.Cmd):
         sys.exit(0)
 
 def main():
-    cli = Cli()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--time', action='store_true')
+    args = parser.parse_args()
+    cli = Cli(args)
 
     while True:
         try:
