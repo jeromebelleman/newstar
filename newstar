@@ -1,5 +1,9 @@
 #! /usr/bin/env python
 
+'''
+OpenStack Nova shell, taking an excuse to make usability improvements
+'''
+
 import os, sys
 from os.path import expanduser
 from subprocess import Popen, PIPE
@@ -11,40 +15,72 @@ import threading, Queue
 import yaml
 
 def showworker(vms, inqueue, outqueue):
+    '''
+    VM info querying thread worker
+    '''
+
     while True:
         server = inqueue.get()
 
-        os.environ['OS_AUTH_URL'], \
-        os.environ['OS_TENANT_ID'], \
-        os.environ['OS_TENANT_NAME'] = vms[server]
+        try:
+            os.environ['OS_AUTH_URL'], \
+            os.environ['OS_TENANT_ID'], \
+            os.environ['OS_TENANT_NAME'] = vms[server]
 
-        proc = Popen(['nova', 'show', server], stdout=PIPE)
-        outqueue.put(proc.stdout.read())
+            proc = Popen(['nova', 'show', server], stdout=PIPE)
+            outqueue.put(proc.stdout.read())
+        except KeyError:
+            print >> sys.stderr, "Couldn't find %s" % server
         inqueue.task_done()
 
 def printworker(outqueue):
+    '''
+    VM info printing thread worker
+    '''
+
     while True:
         output = outqueue.get()
         print output
         outqueue.task_done()
 
+def authck():
+    '''
+    Check if user has authenticated
+    '''
+
+    # Check authentication
+    if 'OS_USERNAME' not in os.environ and 'OS_PASSWORD' not in os.environ:
+        print >> sys.stderr, "You need to authenticate first"
+        return False
+    else:
+        return True
+
 class Cli(cmd.Cmd):
+    '''
+    CLI
+    '''
+
     def __init__(self, args):
+        '''
+        Init CLI
+        '''
+
         cmd.Cmd.__init__(self)
 
         self.time = args.time
 
         # Set prompt and window title
         self.prompt = 'nova% '
-        print "\033]0;nova\007\r",
+        print '\033]0;nova\007\r', # pylint: disable=W1401
 
         # Argument parsers
         self.listparser = argparse.ArgumentParser()
-        self.listparser.add_argument('-v', '--verbose', action='store_true')
-        self.listparser.add_argument('-e', '--error', action='store_true')
+        self.listparser.add_argument('-v', '--verbose', action='store_true',
+                                     help="display VM details" )
+        self.listparser.add_argument('-e', '--error', action='store_true',
+                                      help="only display VMs in ERROR state")
 
         self.showparser = argparse.ArgumentParser()
-        self.showparser.add_argument('-v', '--verbose', action='store_true')
         self.showparser.add_argument('server', nargs='+')
 
         # Common setup
@@ -72,15 +108,11 @@ class Cli(cmd.Cmd):
         thread.daemon = True
         thread.start()
 
-    def _authck(self):
-        # Check authentication
-        if 'OS_USERNAME' not in os.environ and 'OS_PASSWORD' not in os.environ:
-            print >> sys.stderr, "You need to authenticate first"
-            return False
-        else:
-            return True
-
     def _list(self, doprint, dolserror=False, verbose=False):
+        '''
+        List VMs
+        '''
+
         for service in self.services:
             os.environ['OS_AUTH_URL'] = self.services[service]['url']
             tenants = self.services[service]['tenants']
@@ -128,16 +160,24 @@ class Cli(cmd.Cmd):
                     print
 
     def emptyline(self):
+        '''
+        Handle empty lines
+        '''
+
         pass
 
     def do_show(self, line):
+        '''
+        Show VMs info
+        '''
+
         # Parse arguments
         try:
             args = self.showparser.parse_args(shlex.split(line))
         except SystemExit:
             return
 
-        if not self._authck():
+        if not authck():
             return
 
         # Update VM-tenant mapping
@@ -148,47 +188,111 @@ class Cli(cmd.Cmd):
             self.inqueue.put(server)
 
         # Wait until queue is drained
-        t0 = time.time()
+        time0 = time.time()
         self.inqueue.join()
         self.outqueue.join()
         if self.time:
-            print time.time() - t0
+            print time.time() - time0
 
         # Print out results
         while not self.outqueue.empty():
             output = self.outqueue.get()
             print output
 
+    def help_show(self): # pylint: disable=R0201
+        '''
+        Help with show
+        '''
+
+        print "Show VMs info"
+
     def do_list(self, line):
+        '''
+        List VMs
+        '''
+
         # Parse arguments
         try:
             args = self.listparser.parse_args(shlex.split(line))
         except SystemExit:
             return
 
-        if not self._authck():
+        if not authck():
             return
 
         # List VMs in all tenants of all OpenStack services
         self._list(doprint=True, dolserror=args.error, verbose=args.verbose)
 
-    def do_authenticate(self, line):
+    def help_list(self): # pylint: disable=R0201
+        '''
+        Help with list
+        '''
+
+        print "List VMs"
+
+    def do_authenticate(self, _): # pylint: disable=R0201
+        '''
+        Authenticate
+        '''
+
         os.environ['OS_USERNAME'] = raw_input('login: ')
         os.environ['OS_PASSWORD'] = getpass.getpass()
 
+    def help_authenticate(self): # pylint: disable=R0201
+        '''
+        Help with authenticate
+        '''
+
+        print "Authenticate"
+
     def do_lstenants(self, _):
+        '''
+        List known tenants
+        '''
+
         for service in self.services:
             tenants = self.services[service]['tenants']
             for tenant in tenants:
                 print "'%s' in %s" % (tenant['name'], service.capitalize())
 
-    def do_EOF(self, _):
+    def help_lstenants(self): # pylint: disable=R0201
+        '''
+        Help with lstenants
+        '''
+
+        print "List known tenants"
+
+
+    def do_EOF(self, _): # pylint: disable=R0201,C0103
+        '''
+        Handle ^D
+        '''
+
         print
         sys.exit(0)
 
+    def help_EOF(self): # pylint: disable=R0201,C0103
+        '''
+        Help with EOF
+        '''
+
+        print "Exit. You could also use Ctrl-D."
+
+    def help_help(self): # pylint: disable=R0201
+        '''
+        Help with help
+        '''
+
+        print "Print help"
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--time', action='store_true')
+    '''
+    Main function
+    '''
+
+    parser = argparse.ArgumentParser(description="Nova shell")
+    parser.add_argument('--time', action='store_true',
+                        help="measure time spent in operations")
     args = parser.parse_args()
     cli = Cli(args)
 
