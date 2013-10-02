@@ -41,6 +41,7 @@ class Cli(cmd.Cmd):
         # Argument parsers
         self.listparser = argparse.ArgumentParser()
         self.listparser.add_argument('-v', '--verbose', action='store_true')
+        self.listparser.add_argument('-e', '--error', action='store_true')
 
         self.showparser = argparse.ArgumentParser()
         self.showparser.add_argument('-v', '--verbose', action='store_true')
@@ -79,7 +80,7 @@ class Cli(cmd.Cmd):
         else:
             return True
 
-    def _list(self, doprint, verbose=False):
+    def _list(self, doprint, dolserror=False, verbose=False):
         for service in self.services:
             os.environ['OS_AUTH_URL'] = self.services[service]['url']
             tenants = self.services[service]['tenants']
@@ -95,28 +96,33 @@ class Cli(cmd.Cmd):
                 proc = Popen(['nova', 'list'], stdout=PIPE)
 
                 # Handle header
-                if not verbose:
-                    try:
-                        # Skip header
-                        for _ in range(2):
-                            proc.stdout.next()
-                    except StopIteration:
-                        continue
+                for line, _ in zip(proc.stdout, range(3)):
+                    if verbose:
+                        print line,
 
                 # Print VMs
                 for line in proc.stdout:
-                    if verbose:
-                        print line,
-                    else:
-                        try:
-                            server = line.split('|')[2].strip()
-                            self.vms[server] = os.environ['OS_AUTH_URL'], \
-                                               os.environ['OS_TENANT_ID'], \
-                                               os.environ['OS_TENANT_NAME']
-                            if doprint:
-                                print server
-                        except IndexError:
-                            pass
+                    try:
+                        server = line.split('|')[2].strip()
+                        status = line.split('|')[3].strip()
+                        self.vms[server] = os.environ['OS_AUTH_URL'], \
+                                           os.environ['OS_TENANT_ID'], \
+                                           os.environ['OS_TENANT_NAME']
+                        if doprint:
+                            if dolserror:
+                                if status == 'ERROR':
+                                    if verbose:
+                                        print line,
+                                    else:
+                                        print server
+                            else:
+                                if verbose:
+                                    print line,
+                                else:
+                                    print server
+                    except IndexError:
+                        if verbose:
+                            print line,
 
                 if verbose:
                     print
@@ -135,7 +141,7 @@ class Cli(cmd.Cmd):
             return
 
         # Update VM-tenant mapping
-        self._list(False)
+        self._list(doprint=False)
 
         # Collect requested servers into queue
         for server in args.server:
@@ -164,7 +170,7 @@ class Cli(cmd.Cmd):
             return
 
         # List VMs in all tenants of all OpenStack services
-        self._list(True, args.verbose)
+        self._list(doprint=True, dolserror=args.error, verbose=args.verbose)
 
     def do_authenticate(self, line):
         os.environ['OS_USERNAME'] = raw_input('login: ')
