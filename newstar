@@ -176,6 +176,12 @@ class Cli(cmd.Cmd):
         os.environ['OS_USERNAME'] = raw_input('login: ')
         os.environ['OS_PASSWORD'] = getpass.getpass()
 
+    def do_lstenants(self, _):
+        for service in self.services:
+            tenants = self.services[service]['tenants']
+            for tenant in tenants:
+                print "'%s' in %s" % (tenant['name'], service.capitalize())
+
     def do_EOF(self, _):
         print
         sys.exit(0)
