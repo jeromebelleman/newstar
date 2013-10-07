@@ -116,6 +116,9 @@ class Cli(cmd.Cmd):
         yamlfile = directory + '/newstar.yaml'
         if os.path.exists(yamlfile):
             self.services = yaml.load(open(yamlfile))
+        else:
+            print >> sys.stderr, "Couldn't find %s" % yamlfile
+            sys.exit(1)
 
         # Start threads to permanently pull VMs to show the info of
         self.inqueue = Queue.Queue()
@@ -143,7 +146,7 @@ class Cli(cmd.Cmd):
             tenants = self.services[service]['tenants']
             for tenant in tenants:
                 if verbose:
-                    print "%s in %s:" % (tenant['name'], service.capitalize())
+                    print "%s, %s:" % (tenant['name'], service.capitalize())
 
                 # Set tenant
                 os.environ['OS_TENANT_ID'] = tenant['id']
