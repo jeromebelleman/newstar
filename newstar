@@ -8,7 +8,7 @@ import os, sys
 from os.path import expanduser
 from subprocess import Popen, PIPE
 import time
-import cmd
+import cmd, readline
 import argparse, shlex
 import getpass
 import threading, Queue
@@ -17,7 +17,8 @@ import yaml
 # TODO Remove VMs
 # TODO Show all VMs and filter by status
 # TODO Multithread listing
-# TODO Save CLI history
+
+DIR = '~/.newstar'
 
 def showworker(vms, inqueue, outqueue):
     '''
@@ -85,6 +86,11 @@ class Cli(cmd.Cmd):
         self.prompt = 'nova% '
         print '\033]0;nova\007\r', # pylint: disable=W1401
 
+        # Read history
+        histfile = expanduser(DIR + '/histfile')
+        if os.path.exists(histfile):
+            readline.read_history_file(histfile)
+
         # Argument parsers
         self.listparser = argparse.ArgumentParser(prog='list')
         self.listparser.add_argument('-v', '--verbose', action='store_true',
@@ -104,7 +110,12 @@ class Cli(cmd.Cmd):
         self.vms = {}
 
         # Tenant files
-        self.services = yaml.load(open(expanduser('~/.newstar.yaml')))
+        directory = expanduser(DIR)
+        if not os.path.isdir(directory):
+            os.mkdir(directory)
+        yamlfile = directory + '/newstar.yaml'
+        if os.path.exists(yamlfile):
+            self.services = yaml.load(open(yamlfile))
 
         # Start threads to permanently pull VMs to show the info of
         self.inqueue = Queue.Queue()
@@ -173,6 +184,10 @@ class Cli(cmd.Cmd):
 
                 if verbose:
                     print
+
+    def precmd(self, line):
+        readline.write_history_file(expanduser(DIR + '/histfile'))
+        return line
 
     def emptyline(self):
         '''
