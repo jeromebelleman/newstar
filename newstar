@@ -14,6 +14,12 @@ import getpass
 import threading, Queue
 import yaml
 
+# TODO Remove VMs
+# TODO Show all VMs and filter by status
+# TODO Multithread listing
+# TODO Save CLI history
+# TODO Have show print the instance
+
 def showworker(vms, inqueue, outqueue):
     '''
     VM info querying thread worker
@@ -27,8 +33,13 @@ def showworker(vms, inqueue, outqueue):
             os.environ['OS_TENANT_ID'], \
             os.environ['OS_TENANT_NAME'] = vms[server]
 
-            proc = Popen(['nova', 'show', server], stdout=PIPE)
-            outqueue.put(proc.stdout.read())
+            null = open(os.devnull, 'w')
+            # Would receive a KeyboardInterrupt too but that's fine
+            proc = Popen(['nova', 'show', server], stdout=PIPE, stderr=null)
+            output = proc.stdout.read()
+            null.close()
+            if output: # Make sure not empty if KeyboardInterrupted
+                outqueue.put(output)
         except KeyError:
             print >> sys.stderr, "Couldn't find %s" % server
         inqueue.task_done()
@@ -74,14 +85,16 @@ class Cli(cmd.Cmd):
         print '\033]0;nova\007\r', # pylint: disable=W1401
 
         # Argument parsers
-        self.listparser = argparse.ArgumentParser()
+        self.listparser = argparse.ArgumentParser(prog='list')
         self.listparser.add_argument('-v', '--verbose', action='store_true',
                                      help="display VM details" )
         self.listparser.add_argument('-e', '--error', action='store_true',
                                       help="only display VMs in ERROR state")
 
-        self.showparser = argparse.ArgumentParser()
-        self.showparser.add_argument('server', nargs='+')
+        self.showparser = argparse.ArgumentParser(prog='show')
+        self.showparser.add_argument('-a', '--all', dest="allvms",
+                                     action='store_true')
+        self.showparser.add_argument('server', nargs='*')
 
         # Common setup
         os.environ['OS_CACERT'] = '/path/to/certificate.pem'
@@ -177,6 +190,10 @@ class Cli(cmd.Cmd):
         except SystemExit:
             return
 
+        if not args.server and not args.allvms:
+            self.showparser.print_help()
+            return
+
         if not authck():
             return
 
@@ -184,20 +201,26 @@ class Cli(cmd.Cmd):
         self._list(doprint=False)
 
         # Collect requested servers into queue
-        for server in args.server:
-            self.inqueue.put(server)
+        if args.allvms:
+            for server in self.vms:
+                self.inqueue.put(server)
+        else:
+            for server in args.server:
+                self.inqueue.put(server)
 
         # Wait until queue is drained
         time0 = time.time()
+        try:
+            while not self.inqueue.empty():
+                time.sleep(10) # Interruptible
+        except KeyboardInterrupt:
+            while not self.inqueue.empty():
+                self.inqueue.get()
+                self.inqueue.task_done()
         self.inqueue.join()
         self.outqueue.join()
         if self.time:
             print time.time() - time0
-
-        # Print out results
-        while not self.outqueue.empty():
-            output = self.outqueue.get()
-            print output
 
     def help_show(self): # pylint: disable=R0201
         '''
