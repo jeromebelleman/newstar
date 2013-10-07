@@ -18,7 +18,6 @@ import yaml
 # TODO Show all VMs and filter by status
 # TODO Multithread listing
 # TODO Save CLI history
-# TODO Have show print the instance
 
 def showworker(vms, inqueue, outqueue):
     '''
@@ -29,6 +28,7 @@ def showworker(vms, inqueue, outqueue):
         server = inqueue.get()
 
         try:
+            service, \
             os.environ['OS_AUTH_URL'], \
             os.environ['OS_TENANT_ID'], \
             os.environ['OS_TENANT_NAME'] = vms[server]
@@ -39,7 +39,7 @@ def showworker(vms, inqueue, outqueue):
             output = proc.stdout.read()
             null.close()
             if output: # Make sure not empty if KeyboardInterrupted
-                outqueue.put(output)
+                outqueue.put((service, os.environ['OS_TENANT_NAME'], output))
         except KeyError:
             print >> sys.stderr, "Couldn't find %s" % server
         inqueue.task_done()
@@ -50,7 +50,8 @@ def printworker(outqueue):
     '''
 
     while True:
-        output = outqueue.get()
+        service, tenant, output = outqueue.get()
+        print "In %s, %s:" % (tenant, service.capitalize())
         print output
         outqueue.task_done()
 
@@ -150,7 +151,8 @@ class Cli(cmd.Cmd):
                     try:
                         server = line.split('|')[2].strip()
                         status = line.split('|')[3].strip()
-                        self.vms[server] = os.environ['OS_AUTH_URL'], \
+                        self.vms[server] = service, \
+                                           os.environ['OS_AUTH_URL'], \
                                            os.environ['OS_TENANT_ID'], \
                                            os.environ['OS_TENANT_NAME']
                         if doprint:
