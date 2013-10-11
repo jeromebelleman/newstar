@@ -6,21 +6,22 @@ OpenStack Nova shell, taking an excuse to make usability improvements
 
 import os, sys
 from os.path import expanduser
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, call
 import time
 import cmd, readline
-import argparse, shlex
+import shlex
+from argparse import ArgumentParser
 import getpass
 import threading, Queue
 import yaml
 
-# TODO Remove VMs
 # TODO Show all VMs and filter by status
 # TODO Multithread listing
 
 DIR = '~/.newstar'
+CERT = '/path/to/certificate.pem'
 
-def showworker(vms, inqueue, outqueue):
+def showworker(vms, inqueue, outqueue, credentials):
     '''
     VM info querying thread worker
     '''
@@ -29,20 +30,21 @@ def showworker(vms, inqueue, outqueue):
         server = inqueue.get()
 
         try:
-            service, \
-            os.environ['OS_AUTH_URL'], \
-            os.environ['OS_TENANT_ID'], \
-            os.environ['OS_TENANT_NAME'] = vms[server]
+            service, url, tenant = vms[server]
 
             null = open(os.devnull, 'w')
             # Would receive a KeyboardInterrupt too but that's fine
-            proc = Popen(['nova', 'show', server], stdout=PIPE, stderr=null)
+            proc = Popen(['nova', '--os-cacert', CERT, '--os-username',
+                          credentials['username'], '--os-password',
+                          credentials['password'], '--os-auth-url', url,
+                          '--os-tenant-name', tenant, 'show', server],
+                          stdout=PIPE, stderr=null)
             output = proc.stdout.read()
             null.close()
             if output: # Make sure not empty if KeyboardInterrupted
-                outqueue.put((service, os.environ['OS_TENANT_NAME'], output))
+                outqueue.put((service, tenant, output))
         except KeyError:
-            print >> sys.stderr, "Couldn't find %s" % server
+            outqueue.put("Couldn't find %s" % server)
         inqueue.task_done()
 
 def printworker(outqueue):
@@ -51,22 +53,14 @@ def printworker(outqueue):
     '''
 
     while True:
-        service, tenant, output = outqueue.get()
-        print "In %s, %s:" % (tenant, service.capitalize())
-        print output
+        info = outqueue.get()
+        try:
+            service, tenant, output = info
+            print "In %s, %s:" % (tenant, service.capitalize())
+            print output
+        except ValueError:
+            print info
         outqueue.task_done()
-
-def authck():
-    '''
-    Check if user has authenticated
-    '''
-
-    # Check authentication
-    if 'OS_USERNAME' not in os.environ and 'OS_PASSWORD' not in os.environ:
-        print >> sys.stderr, "You need to authenticate first"
-        return False
-    else:
-        return True
 
 class Cli(cmd.Cmd):
     '''
@@ -92,24 +86,31 @@ class Cli(cmd.Cmd):
             readline.read_history_file(histfile)
 
         # Argument parsers
-        self.listparser = argparse.ArgumentParser(prog='list')
+        self.listparser = ArgumentParser(prog='list', description="List VMs.")
         self.listparser.add_argument('-v', '--verbose', action='store_true',
                                      help="display VM details" )
         self.listparser.add_argument('-e', '--error', action='store_true',
                                       help="only display VMs in ERROR state")
 
-        self.showparser = argparse.ArgumentParser(prog='show')
+        self.showparser = ArgumentParser(prog='show',
+                                         description="Show VM details.")
         self.showparser.add_argument('-a', '--all', dest="allvms",
                                      action='store_true')
         self.showparser.add_argument('-c', '--cached', action='store_true',
                                      help="Use cached VM-tenant mapping")
         self.showparser.add_argument('server', nargs='*')
 
-        # Common setup
-        os.environ['OS_CACERT'] = '/path/to/certificate.pem'
+        self.rebootparser = ArgumentParser(prog='reboot',
+                                           description="Reboot VMs.")
+        self.rebootparser.add_argument('--hard', action='store_true',
+                                       help="reboot hard")
+        self.rebootparser.add_argument('server', nargs='+')
 
         # Initialise VM-tenant mapping
         self.vms = {}
+
+        # Credentials
+        self.credentials = {}
 
         # Tenant files
         directory = expanduser(DIR)
@@ -128,8 +129,8 @@ class Cli(cmd.Cmd):
         for _ in range(16): # 16 seems to be the optimal balance
             thread = threading.Thread(target=showworker,
                                       args=(self.vms,
-                                            self.inqueue,
-                                            self.outqueue))
+                                            self.inqueue, self.outqueue,
+                                            self.credentials))
             thread.daemon = True # Stop thread when parent process ends
             thread.start()
 
@@ -138,24 +139,39 @@ class Cli(cmd.Cmd):
         thread.daemon = True
         thread.start()
 
-    def _list(self, doprint, dolserror=False, verbose=False):
+    def authck(self):
+        '''
+        Check if user has authenticated
+        '''
+
+        # Check authentication
+        if not self.credentials:
+            print >> sys.stderr, "You need to authenticate first"
+            return False
+        else:
+            return True
+
+    def _list(self, credentials, doprint, dolserror=False, verbose=False):
         '''
         List VMs
         '''
 
         for service in self.services:
-            os.environ['OS_AUTH_URL'] = self.services[service]['url']
+            url = self.services[service]['url']
             tenants = self.services[service]['tenants']
             for tenant in tenants:
                 if verbose:
                     print "%s, %s:" % (tenant['name'], service.capitalize())
 
                 # Set tenant
-                os.environ['OS_TENANT_ID'] = tenant['id']
-                os.environ['OS_TENANT_NAME'] = tenant['name']
+                tenant = tenant['name']
 
                 # Run nova
-                proc = Popen(['nova', 'list'], stdout=PIPE)
+                proc = Popen(['nova', '--os-cacert', CERT, '--os-username',
+                              self.credentials['username'], '--os-password',
+                              self.credentials['password'], '--os-auth-url',
+                              url, '--os-tenant-name', tenant, 'list'],
+                             stdout=PIPE)
 
                 # Handle header
                 for line, _ in zip(proc.stdout, range(3)):
@@ -167,10 +183,7 @@ class Cli(cmd.Cmd):
                     try:
                         server = line.split('|')[2].strip()
                         status = line.split('|')[3].strip()
-                        self.vms[server] = service, \
-                                           os.environ['OS_AUTH_URL'], \
-                                           os.environ['OS_TENANT_ID'], \
-                                           os.environ['OS_TENANT_NAME']
+                        self.vms[server] = service, url, tenant
                         if doprint:
                             if dolserror:
                                 if status == 'ERROR':
@@ -216,13 +229,13 @@ class Cli(cmd.Cmd):
             self.showparser.print_help()
             return
 
-        if not authck():
+        if not self.authck():
             return
 
         # Update VM-tenant mapping
         time0 = time.time()
         if not args.cached:
-            self._list(doprint=False)
+            self._list(self.credentials, doprint=False)
 
         # Collect requested servers into queue
         if args.allvms:
@@ -263,11 +276,12 @@ class Cli(cmd.Cmd):
         except SystemExit:
             return
 
-        if not authck():
+        if not self.authck():
             return
 
         # List VMs in all tenants of all OpenStack services
-        self._list(doprint=True, dolserror=args.error, verbose=args.verbose)
+        self._list(self.credentials, doprint=True, dolserror=args.error,
+                   verbose=args.verbose)
 
     def help_list(self): # pylint: disable=R0201
         '''
@@ -281,8 +295,11 @@ class Cli(cmd.Cmd):
         Authenticate
         '''
 
-        os.environ['OS_USERNAME'] = raw_input('login: ')
-        os.environ['OS_PASSWORD'] = getpass.getpass()
+        self.credentials['username'] = raw_input('login: ')
+        self.credentials['password'] = getpass.getpass()
+
+        os.environ['OS_USERNAME'] = self.credentials['username']
+        os.environ['OS_PASSWORD'] = self.credentials['password']
 
     def help_authenticate(self): # pylint: disable=R0201
         '''
@@ -308,6 +325,41 @@ class Cli(cmd.Cmd):
 
         print "List known tenants"
 
+    def do_reboot(self, line):
+        '''
+        Reboot VMs
+        '''
+
+        # Parse arguments
+        try:
+            args = self.rebootparser.parse_args(shlex.split(line))
+        except SystemExit:
+            return
+
+        if not self.authck():
+            return
+
+        # Update VM-tenant mapping
+        self._list(self.credentials, doprint=False)
+
+        for server in args.server:
+            try:
+                service, url, tenant = self.vms[server]
+
+                call(['nova', '--os-cacert', CERT, '--os-username',
+                      self.credentials['username'], '--os-password',
+                      self.credentials['password'], '--os-auth-url', url,
+                      '--os-tenant-name', tenant, 'reboot'] + \
+                     (['--hard'] if args.hard else []) + [server])
+            except KeyError:
+                print >> sys.stderr, "Couldn't find %s" % server
+
+    def help_reboot(self): # pylint: disable=R0201,C0103
+        '''
+        Help with rebooting
+        '''
+
+        self.rebootparser.print_help()
 
     def do_EOF(self, _): # pylint: disable=R0201,C0103
         '''
@@ -336,7 +388,7 @@ def main():
     Main function
     '''
 
-    parser = argparse.ArgumentParser(description="Nova shell")
+    parser = ArgumentParser(description="Nova shell")
     parser.add_argument('--time', action='store_true',
                         help="measure time spent in operations")
     args = parser.parse_args()
