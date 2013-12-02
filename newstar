@@ -14,12 +14,16 @@ from argparse import ArgumentParser
 import getpass
 import threading, Queue
 import yaml
+import tempfile
 
 # TODO Show all VMs and filter by status
 # TODO Multithread listing
 
-DIR = '~/.newstar'
+DIR = expanduser('~/.newstar')
 CERT = '/path/to/certificate.pem'
+
+def wintitle():
+    print '\033]0;newstar\007\r', # pylint: disable=W1401
 
 def showworker(vms, inqueue, outqueue, credentials):
     '''
@@ -47,7 +51,7 @@ def showworker(vms, inqueue, outqueue, credentials):
             outqueue.put("Couldn't find %s" % server)
         inqueue.task_done()
 
-def printworker(outqueue):
+def printworker(outqueue, temp):
     '''
     VM info printing thread worker
     '''
@@ -56,8 +60,9 @@ def printworker(outqueue):
         info = outqueue.get()
         try:
             service, tenant, output = info
-            print "In %s, %s:" % (tenant, service.capitalize())
-            print output
+            for fhl in sys.stdout, temp:
+                print >> fhl, "In %s, %s:" % (tenant, service.capitalize())
+                print >> fhl, output
         except ValueError:
             print info
         outqueue.task_done()
@@ -77,11 +82,11 @@ class Cli(cmd.Cmd):
         self.time = args.time
 
         # Set prompt and window title
-        self.prompt = 'nova% '
-        print '\033]0;nova\007\r', # pylint: disable=W1401
+        self.prompt = 'newstar% '
+        wintitle()
 
         # Read history
-        histfile = expanduser(DIR + '/histfile')
+        histfile = DIR + '/histfile'
         if os.path.exists(histfile):
             readline.read_history_file(histfile)
 
@@ -106,6 +111,9 @@ class Cli(cmd.Cmd):
                                        help="reboot hard")
         self.rebootparser.add_argument('server', nargs='+')
 
+        self.pageparser = ArgumentParser(prog='page',
+                                         description="Page last output.")
+
         # Initialise VM-tenant mapping
         self.vms = {}
 
@@ -113,7 +121,7 @@ class Cli(cmd.Cmd):
         self.credentials = {}
 
         # Tenant files
-        directory = expanduser(DIR)
+        directory = DIR
         if not os.path.isdir(directory):
             os.mkdir(directory)
         yamlfile = directory + '/newstar.yaml'
@@ -134,8 +142,12 @@ class Cli(cmd.Cmd):
             thread.daemon = True # Stop thread when parent process ends
             thread.start()
 
+        # Set page file name
+        self.temp = tempfile.NamedTemporaryFile(prefix='page-', dir=DIR)
+
         # Printer thread
-        thread = threading.Thread(target=printworker, args=(self.outqueue,))
+        thread = threading.Thread(target=printworker,
+                                  args=(self.outqueue, self.temp))
         thread.daemon = True
         thread.start()
 
@@ -204,7 +216,7 @@ class Cli(cmd.Cmd):
                     print
 
     def precmd(self, line):
-        readline.write_history_file(expanduser(DIR + '/histfile'))
+        readline.write_history_file(DIR + '/histfile')
         return line
 
     def emptyline(self):
@@ -238,6 +250,8 @@ class Cli(cmd.Cmd):
             self._list(self.credentials, doprint=False)
 
         # Collect requested servers into queue
+        self.temp.seek(0)
+        self.temp.truncate()
         if args.allvms:
             for server in self.vms:
                 self.inqueue.put(server)
@@ -255,6 +269,7 @@ class Cli(cmd.Cmd):
                 self.inqueue.task_done()
         self.inqueue.join()
         self.outqueue.join()
+        self.temp.flush()
         if self.time:
             print time.time() - time0
 
@@ -307,6 +322,27 @@ class Cli(cmd.Cmd):
         '''
 
         print "Authenticate"
+
+    def do_page(self, line):
+        '''
+        Page last result
+        '''
+
+        # Parse arguments
+        try:
+            args = self.pageparser.parse_args(shlex.split(line))
+        except SystemExit:
+            return
+
+        # Parse 
+        call(['vim', '-n', '+set nowrap titlestring=newstar"', self.temp.name])
+        wintitle()
+
+    def help_page(self):
+        '''
+        Help with paging
+        '''
+        self.pageparser.print_help()
 
     def do_lstenants(self, _):
         '''
@@ -365,6 +401,9 @@ class Cli(cmd.Cmd):
         '''
         Handle ^D
         '''
+
+        # For some reason the tempfile isn't closed with the object is detroyed
+        self.temp.close()
 
         print
         sys.exit(0)
