@@ -18,7 +18,6 @@ import tempfile
 
 # TODO Show all VMs and filter by status
 # TODO Editing
-# TODO Use cache by default
 
 DIR = expanduser('~/.newstar')
 CERT = '/path/to/certificate.pem'
@@ -40,7 +39,7 @@ def join(queue):
             queue.task_done()
     queue.join()
 
-def listworker(vms, listqueue, lock, credentials):
+def listworker(vms, listqueue, lock):
     while True:
         url, service, tenant, doprint, dolserror, verbose = listqueue.get()
 
@@ -48,11 +47,8 @@ def listworker(vms, listqueue, lock, credentials):
         tenant = tenant['name']
 
         # Run nova
-        proc = Popen(['nova', '--os-cacert', CERT, '--os-username',
-                      credentials['username'], '--os-password',
-                      credentials['password'], '--os-auth-url',
-                      url, '--os-tenant-name', tenant, 'list'],
-                     stdout=PIPE)
+        proc = Popen(['nova', '--os-cacert', CERT, '--os-auth-url', url,
+                     '--os-tenant-name', tenant, 'list'], stdout=PIPE)
 
         output = ''
 
@@ -99,7 +95,7 @@ def listworker(vms, listqueue, lock, credentials):
 
         listqueue.task_done()
 
-def showworker(vms, showqueue, lock, credentials, temp):
+def showworker(vms, showqueue, lock, temp):
     '''
     VM info querying thread worker
     '''
@@ -112,9 +108,7 @@ def showworker(vms, showqueue, lock, credentials, temp):
 
             null = open(os.devnull, 'w')
             # Would receive a KeyboardInterrupt too but that's fine
-            proc = Popen(['nova', '--os-cacert', CERT, '--os-username',
-                          credentials['username'], '--os-password',
-                          credentials['password'], '--os-auth-url', url,
+            proc = Popen(['nova', '--os-cacert', CERT, '--os-auth-url', url,
                           '--os-tenant-name', tenant, 'show', server],
                           stdout=PIPE, stderr=null)
             output = proc.stdout.read()
@@ -164,8 +158,6 @@ class Cli(cmd.Cmd):
                                          description="Show VM details.")
         self.showparser.add_argument('-a', '--all', dest="allvms",
                                      action='store_true')
-        self.showparser.add_argument('-c', '--cached', action='store_true',
-                                     help="Use cached VM-tenant mapping")
         self.showparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.showparser.add_argument('server', nargs='*')
 
@@ -187,9 +179,7 @@ class Cli(cmd.Cmd):
         self.vms = {}
 
         # Credentials
-        self.credentials = {'username': getpass.getuser()}
-        if 'NOVAWORD' in os.environ:
-            self.credentials['password'] = os.environ['NOVAWORD']
+        os.environ['OS_USERNAME'] = getpass.getuser()
 
         # Tenant files
         directory = DIR
@@ -213,7 +203,7 @@ class Cli(cmd.Cmd):
         for _ in range(16): # 16 seems to be the optimal balance
             thread = threading.Thread(target=showworker,
                                       args=(self.vms, self.showqueue, self.lock,
-                                            self.credentials, self.temp))
+                                            self.temp))
             thread.daemon = True # Stop thread when parent process ends
             thread.start()
 
@@ -221,8 +211,8 @@ class Cli(cmd.Cmd):
         self.listqueue = Queue.Queue()
         for _ in range(8): # Shouldn't ever have more than 8 tenants
             thread = threading.Thread(target=listworker,
-                                      args=(self.vms, self.listqueue, self.lock,
-                                            self.credentials))
+                                      args=(self.vms, self.listqueue,
+                                            self.lock))
             thread.daemon = True # Stop thread when parent process ends
             thread.start()
 
@@ -232,13 +222,13 @@ class Cli(cmd.Cmd):
         '''
 
         # Check authentication
-        if 'password' not in self.credentials:
+        if 'OS_PASSWORD' not in os.environ:
             print >> sys.stderr, "You need to authenticate first"
             return False
         else:
             return True
 
-    def _list(self, credentials, doprint, dolserror=False, verbose=False):
+    def _list(self, doprint, dolserror=False, verbose=False):
         '''
         List VMs
         '''
@@ -283,8 +273,8 @@ class Cli(cmd.Cmd):
 
         # Update VM-tenant mapping
         time0 = time.time()
-        if not args.cached:
-            self._list(self.credentials, doprint=False)
+        if not self.vms:
+            self._list(doprint=False)
 
         # Collect requested servers into queue
         self.temp.seek(0)
@@ -327,8 +317,7 @@ class Cli(cmd.Cmd):
 
         # List VMs in all tenants of all OpenStack services
         time0 = time.time()
-        self._list(self.credentials, doprint=True, dolserror=args.error,
-                   verbose=args.verbose)
+        self._list(doprint=True, dolserror=args.error, verbose=args.verbose)
         if args.time:
             print time.time() - time0
 
@@ -353,13 +342,10 @@ class Cli(cmd.Cmd):
             return
 
         if args.login:
-            self.credentials['username'] = args.login
+            os.environ['OS_USERNAME'] = args.login
         else:
-            self.credentials['username'] = raw_input('login: ')
-        self.credentials['password'] = getpass.getpass()
-
-        os.environ['OS_USERNAME'] = self.credentials['username']
-        os.environ['OS_PASSWORD'] = self.credentials['password']
+            os.environ['OS_USERNAME'] = getpass.getuser()
+        os.environ['OS_PASSWORD'] = getpass.getpass()
 
     def help_authenticate(self): # pylint: disable=R0201
         '''
@@ -422,15 +408,13 @@ class Cli(cmd.Cmd):
 
         # Update VM-tenant mapping
         time0 = time.time()
-        self._list(self.credentials, doprint=False)
+        self._list(doprint=False)
 
         for server in args.server:
             try:
                 service, url, tenant = self.vms[server]
 
-                call(['nova', '--os-cacert', CERT, '--os-username',
-                      self.credentials['username'], '--os-password',
-                      self.credentials['password'], '--os-auth-url', url,
+                call(['nova', '--os-cacert', CERT, '--os-auth-url', url,
                       '--os-tenant-name', tenant, 'reboot'] + \
                      (['--hard'] if args.hard else []) + [server])
             except KeyError:
