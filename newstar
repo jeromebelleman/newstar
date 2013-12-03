@@ -18,6 +18,7 @@ import tempfile
 
 # TODO Show all VMs and filter by status
 # TODO Multithread listing
+# TODO Ring a bell when done
 
 DIR = expanduser('~/.newstar')
 CERT = '/path/to/certificate.pem'
@@ -25,7 +26,7 @@ CERT = '/path/to/certificate.pem'
 def wintitle():
     print '\033]0;newstar\007\r', # pylint: disable=W1401
 
-def showworker(vms, inqueue, outqueue, credentials):
+def showworker(vms, inqueue, lock, credentials, temp):
     '''
     VM info querying thread worker
     '''
@@ -46,26 +47,14 @@ def showworker(vms, inqueue, outqueue, credentials):
             output = proc.stdout.read()
             null.close()
             if output: # Make sure not empty if KeyboardInterrupted
-                outqueue.put((service, tenant, output))
+                lock.acquire()
+                for fhl in sys.stdout, temp:
+                    print >> fhl, "In %s, %s:" % (tenant, service.capitalize())
+                    print >> fhl, output
+                lock.release()
         except KeyError:
-            outqueue.put("Couldn't find %s" % server)
+            print >> sys.stderr, "Couldn't find %s" % server
         inqueue.task_done()
-
-def printworker(outqueue, temp):
-    '''
-    VM info printing thread worker
-    '''
-
-    while True:
-        info = outqueue.get()
-        try:
-            service, tenant, output = info
-            for fhl in sys.stdout, temp:
-                print >> fhl, "In %s, %s:" % (tenant, service.capitalize())
-                print >> fhl, output
-        except ValueError:
-            print info
-        outqueue.task_done()
 
 class Cli(cmd.Cmd):
     '''
@@ -131,25 +120,18 @@ class Cli(cmd.Cmd):
             print >> sys.stderr, "Couldn't find %s" % yamlfile
             sys.exit(1)
 
-        # Start threads to permanently pull VMs to show the info of
-        self.inqueue = Queue.Queue()
-        self.outqueue = Queue.Queue()
-        for _ in range(16): # 16 seems to be the optimal balance
-            thread = threading.Thread(target=showworker,
-                                      args=(self.vms,
-                                            self.inqueue, self.outqueue,
-                                            self.credentials))
-            thread.daemon = True # Stop thread when parent process ends
-            thread.start()
-
         # Set page file name
         self.temp = tempfile.NamedTemporaryFile(prefix='page-', dir=DIR)
 
-        # Printer thread
-        thread = threading.Thread(target=printworker,
-                                  args=(self.outqueue, self.temp))
-        thread.daemon = True
-        thread.start()
+        # Start threads to permanently pull VMs to show the info of
+        self.inqueue = Queue.Queue()
+        self.lock = threading.Lock()
+        for _ in range(16): # 16 seems to be the optimal balance
+            thread = threading.Thread(target=showworker,
+                                      args=(self.vms, self.inqueue, self.lock,
+                                            self.credentials, self.temp))
+            thread.daemon = True # Stop thread when parent process ends
+            thread.start()
 
     def authck(self):
         '''
@@ -268,7 +250,6 @@ class Cli(cmd.Cmd):
                 self.inqueue.get()
                 self.inqueue.task_done()
         self.inqueue.join()
-        self.outqueue.join()
         self.temp.flush()
         if self.time:
             print time.time() - time0
