@@ -187,6 +187,9 @@ class Cli(cmd.Cmd):
         self.editparser.add_argument('command', help="command")
         self.editparser.add_argument('argument', help="arguments", nargs='*')
 
+        self.lstenantsparser = ArgumentParser(prog='lstenants',
+                                              description="List known tenants.")
+
         # Initialise VM-tenant mapping
         self.vms = {}
 
@@ -312,7 +315,7 @@ class Cli(cmd.Cmd):
         Help with show
         '''
 
-        print "Show VMs info"
+        self.showparser.print_help()
 
     def do_list(self, line):
         '''
@@ -341,7 +344,7 @@ class Cli(cmd.Cmd):
         Help with list
         '''
 
-        print "List VMs"
+        print self.listparser.print_help()
 
     def do_authenticate(self, line): # pylint: disable=R0201
         '''
@@ -365,7 +368,7 @@ class Cli(cmd.Cmd):
         Help with authenticate
         '''
 
-        print "Authenticate"
+        self.authparser.print_help()
 
     def do_page(self, line):
         '''
@@ -427,10 +430,16 @@ class Cli(cmd.Cmd):
 
         self.editparser.print_help()
 
-    def do_lstenants(self, _):
+    def do_lstenants(self, line):
         '''
         List known tenants
         '''
+
+        # Parse arguments
+        try:
+            args = self.lstenantsparser.parse_args(shlex.split(line))
+        except SystemExit:
+            return
 
         for service in self.services:
             tenants = self.services[service]['tenants']
@@ -442,7 +451,7 @@ class Cli(cmd.Cmd):
         Help with lstenants
         '''
 
-        print "List known tenants"
+        self.lstenantsparser.print_help()
 
     def do_reboot(self, line):
         '''
