@@ -430,6 +430,14 @@ class Cli(cmd.Cmd):
 
         self.editparser.print_help()
 
+    def complete_edit(self, text, line, begidx, endidx):
+        '''
+        Complete command for Vim editing
+        '''
+
+        return [cmd[3:] for cmd in dir(self)
+                if cmd.startswith('do_') and cmd[3:].startswith(text)]
+
     def do_lstenants(self, line):
         '''
         List known tenants
