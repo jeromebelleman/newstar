@@ -20,11 +20,12 @@ import tempfile
 # TODO Display ERROR details (+ dates)
 
 DIR = expanduser('~/.newstar')
-CERT = '/path/to/certificate.pem'
 TIMEARGS = '-t', '--time'
 TIMEKWARGS = {'action': 'store_true',
               'help':   "measure time spent in operations",
              }
+SERVERARGS = 'server',
+SERVERKWARGS = {'nargs': '+'}
 
 def wintitle():
     print '\033]0;newstar\007\r', # pylint: disable=W1401
@@ -47,8 +48,8 @@ def listworker(vms, listqueue, lock):
         tenant = tenant['name']
 
         # Run nova
-        proc = Popen(['nova', '--os-cacert', CERT, '--os-auth-url', url,
-                     '--os-tenant-name', tenant, 'list'], stdout=PIPE)
+        proc = Popen(['nova', '--os-auth-url', url, '--os-tenant-name', tenant,
+                      'list'], stdout=PIPE)
 
         output = ''
 
@@ -98,22 +99,21 @@ def listworker(vms, listqueue, lock):
 
         listqueue.task_done()
 
-def showworker(vms, showqueue, lock, temp):
+def vmworker(vms, vmqueue, lock, temp):
     '''
-    VM info querying thread worker
+    VM querying thread worker
     '''
 
     while True:
-        server = showqueue.get()
+        operation, server = vmqueue.get()
 
         try:
             service, url, tenant = vms[server]
 
             null = open(os.devnull, 'w')
             # Would receive a KeyboardInterrupt too but that's fine
-            proc = Popen(['nova', '--os-cacert', CERT, '--os-auth-url', url,
-                          '--os-tenant-name', tenant, 'show', server],
-                          stdout=PIPE, stderr=null)
+            proc = Popen(['nova', '--os-auth-url', url, '--os-tenant-name',
+                          tenant, operation, server], stdout=PIPE, stderr=null)
 
             # Wait for process to avoid zombies
             output, _ = proc.communicate()
@@ -130,7 +130,7 @@ def showworker(vms, showqueue, lock, temp):
             lock.acquire()
             print >> sys.stderr, "Couldn't find %s" % server
             lock.release()
-        showqueue.task_done()
+        vmqueue.task_done()
 
 class Cli(cmd.Cmd):
     '''
@@ -163,17 +163,15 @@ class Cli(cmd.Cmd):
 
         self.showparser = ArgumentParser(prog='show',
                                          description="Show VM details.")
-        self.showparser.add_argument('-a', '--all', dest="allvms",
-                                     action='store_true')
         self.showparser.add_argument(*TIMEARGS, **TIMEKWARGS)
-        self.showparser.add_argument('server', nargs='*')
+        self.showparser.add_argument(*SERVERARGS, **SERVERKWARGS)
 
         self.rebootparser = ArgumentParser(prog='reboot',
                                            description="Reboot VMs.")
         self.rebootparser.add_argument('--hard', action='store_true',
                                        help="reboot hard")
         self.rebootparser.add_argument(*TIMEARGS, **TIMEKWARGS)
-        self.rebootparser.add_argument('server', nargs='+')
+        self.rebootparser.add_argument(*SERVERARGS, **SERVERKWARGS)
 
         self.authparser = ArgumentParser(prog='authenticate',
             description='Authenticate against OpenStack.')
@@ -187,6 +185,11 @@ class Cli(cmd.Cmd):
         self.editparser.add_argument('command', help="command")
         self.editparser.add_argument('argument', help="arguments", nargs='*')
 
+        self.consoleparser = ArgumentParser(prog='console',
+                                            description="Dump console.")
+        self.consoleparser.add_argument(*TIMEARGS, **TIMEKWARGS)
+        self.consoleparser.add_argument(*SERVERARGS, **SERVERKWARGS)
+
         self.lstenantsparser = ArgumentParser(prog='lstenants',
                                               description="List known tenants.")
 
@@ -196,13 +199,14 @@ class Cli(cmd.Cmd):
         # Credentials
         os.environ['OS_USERNAME'] = getpass.getuser()
 
-        # Tenant files
+        # Config file
         directory = DIR
         if not os.path.isdir(directory):
             os.mkdir(directory)
         yamlfile = directory + '/newstar.yaml'
         if os.path.exists(yamlfile):
-            self.services = yaml.load(open(yamlfile))
+            self.config = yaml.load(open(yamlfile))
+            self.services = self.config['services']
         else:
             print >> sys.stderr, "Couldn't find %s" % yamlfile
             sys.exit(1)
@@ -214,10 +218,10 @@ class Cli(cmd.Cmd):
         self.lock = threading.Lock()
 
         # Start threads to permanently pull VMs to show the info of
-        self.showqueue = Queue.Queue()
+        self.vmqueue = Queue.Queue()
         for _ in range(16): # 16 seems to be the optimal balance
-            thread = threading.Thread(target=showworker,
-                                      args=(self.vms, self.showqueue, self.lock,
+            thread = threading.Thread(target=vmworker,
+                                      args=(self.vms, self.vmqueue, self.lock,
                                             self.temp))
             thread.daemon = True # Stop thread when parent process ends
             thread.start()
@@ -269,19 +273,15 @@ class Cli(cmd.Cmd):
 
         pass
 
-    def do_show(self, line):
+    def _queryvm(self, parser, line, operation):
         '''
-        Show VMs info
+        Query on a per-VM basis
         '''
 
         # Parse arguments
         try:
-            args = self.showparser.parse_args(shlex.split(line))
+            args = parser.parse_args(shlex.split(line))
         except SystemExit:
-            return
-
-        if not args.server and not args.allvms:
-            self.showparser.print_help()
             return
 
         if not self.authck():
@@ -295,20 +295,30 @@ class Cli(cmd.Cmd):
         # Collect requested servers into queue
         self.temp.seek(0)
         self.temp.truncate()
-        if args.allvms:
-            for server in self.vms:
-                self.showqueue.put(server)
-        else:
-            for server in args.server:
-                self.showqueue.put(server)
+        for server in args.server:
+            self.vmqueue.put((operation, server))
 
         # Wait until queue is drained
-        join(self.showqueue)
+        join(self.vmqueue)
         self.temp.flush()
 
         if args.time:
             print time.time() - time0
         print '\a\r',
+
+    def do_show(self, line):
+        '''
+        Show VMs info
+        '''
+
+        self._queryvm(self.showparser, line, 'show')
+
+    def do_console(self, line):
+        '''
+        Dump console
+        '''
+
+        self._queryvm(self.consoleparser, line, 'console')
 
     def help_show(self): # pylint: disable=R0201
         '''
@@ -483,9 +493,8 @@ class Cli(cmd.Cmd):
             try:
                 service, url, tenant = self.vms[server]
 
-                call(['nova', '--os-cacert', CERT, '--os-auth-url', url,
-                      '--os-tenant-name', tenant, 'reboot'] + \
-                     (['--hard'] if args.hard else []) + [server])
+                call(['nova', '--os-auth-url', url, '--os-tenant-name', tenant,
+                      'reboot'] + (['--hard'] if args.hard else []) + [server])
             except KeyError:
                 print >> sys.stderr, "Couldn't find %s" % server
 
