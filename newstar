@@ -8,13 +8,11 @@ import os, sys
 from os.path import expanduser
 from subprocess import Popen, PIPE, call
 import time
-import cmd, readline
-import shlex
+import cli
 from argparse import ArgumentParser
 import getpass
 import threading, Queue
 import yaml
-import tempfile
 
 # TODO Show all VMs and filter by status
 # TODO Display ERROR details (+ dates)
@@ -26,9 +24,6 @@ TIMEKWARGS = {'action': 'store_true',
              }
 SERVERARGS = 'server',
 SERVERKWARGS = {'nargs': '+'}
-
-def wintitle():
-    print '\033]0;newstar\007\r', # pylint: disable=W1401
 
 def join(queue):
     try:
@@ -42,8 +37,8 @@ def join(queue):
 
 def listworker(vms, listqueue, lock):
     while True:
-        url, service, tenant, servers, doprint, dolserror, verbose = \
-            listqueue.get()
+        url, service, tenant, servers, doprint, dolserror, dolsbuild, \
+            dolsdeleted, verbose = listqueue.get()
 
         # Set tenant
         tenant = tenant['name']
@@ -59,9 +54,9 @@ def listworker(vms, listqueue, lock):
             output += "%s, %s:\n" % (tenant, service.capitalize())
 
         # Handle header
-        for line, _ in zip(proc.stdout, range(3)):
+        for _ in range(3):
             if verbose:
-                output += line
+                output += proc.stdout.next()
 
         # Print VMs
         for line in proc.stdout:
@@ -75,6 +70,12 @@ def listworker(vms, listqueue, lock):
                 if doprint:
                     if dolserror:
                         match = status == 'ERROR'
+
+                    if dolsbuild:
+                        match = status == 'BUILD'
+
+                    if dolsdeleted:
+                        match = status == 'DELETED'
 
                     if servers:
                         match = server in servers
@@ -133,7 +134,7 @@ def vmworker(vms, vmqueue, lock, temp):
             pass
         vmqueue.task_done()
 
-class Cli(cmd.Cmd):
+class Newstar(cli.Cli):
     '''
     CLI
     '''
@@ -143,57 +144,39 @@ class Cli(cmd.Cmd):
         Init CLI
         '''
 
-        cmd.Cmd.__init__(self)
-
-        # Set prompt and window title
-        self.prompt = 'newstar% '
-        wintitle()
-
-        # Read history
-        histfile = DIR + '/histfile'
-        if os.path.exists(histfile):
-            readline.read_history_file(histfile)
+        cli.Cli.__init__(self, True)
 
         # Argument parsers
-        self.listparser = ArgumentParser(prog='list', description="List VMs.")
         self.listparser.add_argument('-v', '--verbose', action='store_true',
                                      help="display VM details" )
         self.listparser.add_argument('-e', '--error', action='store_true',
-                                      help="only display VMs in ERROR state")
+                                     help="only display VMs in ERROR state")
+        self.listparser.add_argument('-b', '--build', action='store_true',
+                                     help="only display VMs in BUILD state")
+        self.listparser.add_argument('-d', '--deleted', action='store_true',
+                                     help="only display VMs in DELETED state")
         self.listparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.listparser.add_argument(*SERVERARGS, nargs='*')
+        self.listparser.description = "List VMs."
 
-        self.showparser = ArgumentParser(prog='show',
-                                         description="Show VM details.")
         self.showparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.showparser.add_argument(*SERVERARGS, **SERVERKWARGS)
+        self.showparser.description = "Show VM details."
 
-        self.rebootparser = ArgumentParser(prog='reboot',
-                                           description="Reboot VMs.")
         self.rebootparser.add_argument('--hard', action='store_true',
                                        help="reboot hard")
         self.rebootparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.rebootparser.add_argument(*SERVERARGS, **SERVERKWARGS)
+        self.rebootparser.description = "Reboot VMs."
 
-        self.authparser = ArgumentParser(prog='authenticate',
-            description='Authenticate against OpenStack.')
-        self.authparser.add_argument('-l', '--login')
+        self.authenticateparser.add_argument('-l', '--login')
+        self.authenticateparser.description = "Authenticate against OpenStack."
 
-        self.pageparser = ArgumentParser(prog='page',
-                                         description="Page last output.")
-
-        self.editparser = ArgumentParser(prog='edit',
-                                         description="Edit command line.")
-        self.editparser.add_argument('command', help="command")
-        self.editparser.add_argument('argument', help="arguments", nargs='*')
-
-        self.consoleparser = ArgumentParser(prog='console',
-                                            description="Dump console.")
         self.consoleparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.consoleparser.add_argument(*SERVERARGS, **SERVERKWARGS)
+        self.consoleparser.description = "Dump console."
 
-        self.lstenantsparser = ArgumentParser(prog='lstenants',
-                                              description="List known tenants.")
+        self.lstenantsparser.description = "List known tenants."
 
         # Initialise VM-tenant mapping
         self.vms = {}
@@ -202,19 +185,13 @@ class Cli(cmd.Cmd):
         os.environ['OS_USERNAME'] = getpass.getuser()
 
         # Config file
-        directory = DIR
-        if not os.path.isdir(directory):
-            os.mkdir(directory)
-        yamlfile = directory + '/newstar.yaml'
+        yamlfile = self.directory + '/newstar.yaml'
         if os.path.exists(yamlfile):
             self.config = yaml.load(open(yamlfile))
             self.services = self.config['services']
         else:
             print >> sys.stderr, "Couldn't find %s" % yamlfile
             sys.exit(1)
-
-        # Set page file name
-        self.temp = tempfile.NamedTemporaryFile(prefix='page-', dir=DIR)
 
         # Common thread objects
         self.lock = threading.Lock()
@@ -249,7 +226,8 @@ class Cli(cmd.Cmd):
         else:
             return True
 
-    def _list(self, servers=[], doprint=False, dolserror=False, verbose=False):
+    def _list(self, servers=[], doprint=False, dolserror=False, dolsbuild=False,
+              dolsdeleted=False, verbose=False):
         '''
         List VMs
         '''
@@ -259,32 +237,14 @@ class Cli(cmd.Cmd):
             tenants = self.services[service]['tenants']
             for tenant in tenants:
                 self.listqueue.put((url, service, tenant, servers, doprint,
-                                    dolserror, verbose))
+                                    dolserror, dolsbuild, dolsdeleted, verbose))
 
         join(self.listqueue)
 
-    def precmd(self, line):
-        readline.set_pre_input_hook()
-        readline.write_history_file(DIR + '/histfile')
-        return line
-
-    def emptyline(self):
-        '''
-        Handle empty lines
-        '''
-
-        pass
-
-    def _queryvm(self, parser, line, operation):
+    def _queryvm(self, args, operation):
         '''
         Query on a per-VM basis
         '''
-
-        # Parse arguments
-        try:
-            args = parser.parse_args(shlex.split(line))
-        except SystemExit:
-            return
 
         if not self.authck():
             return
@@ -295,50 +255,37 @@ class Cli(cmd.Cmd):
             self._list(doprint=False)
 
         # Collect requested servers into queue
-        self.temp.seek(0)
-        self.temp.truncate()
+        self.tempreset()
         for server in args.server:
             self.vmqueue.put((operation, server))
 
         # Wait until queue is drained
         join(self.vmqueue)
-        self.temp.flush()
 
         if args.time:
             print time.time() - time0
         print '\a\r',
 
-    def do_show(self, line):
+    def run_show(self, args):
         '''
         Show VMs info
         '''
 
-        self._queryvm(self.showparser, line, 'show')
+        self._queryvm(args, 'show')
 
-    def do_console(self, line):
+    def run_console(self, args):
         '''
         Dump console
         '''
 
-        self._queryvm(self.consoleparser, line, 'console-log')
+        self._queryvm(args, 'console-log')
 
-    def help_show(self): # pylint: disable=R0201
-        '''
-        Help with show
-        '''
-
-        self.showparser.print_help()
-
-    def do_list(self, line):
+    def run_list(self, args):
         '''
         List VMs
         '''
 
-        # Parse arguments
-        try:
-            args = self.listparser.parse_args(shlex.split(line))
-        except SystemExit:
-            return
+        # TODO Displays the header in the short version
 
         if not self.authck():
             return
@@ -346,29 +293,17 @@ class Cli(cmd.Cmd):
         # List VMs in all tenants of all OpenStack services
         time0 = time.time()
         self._list(args.server, doprint=True, dolserror=args.error,
+                   dolsbuild=args.build, dolsdeleted=args.deleted,
                    verbose=args.verbose)
         if args.time:
             print time.time() - time0
 
         print '\a\r',
 
-    def help_list(self): # pylint: disable=R0201
-        '''
-        Help with list
-        '''
-
-        print self.listparser.print_help()
-
-    def do_authenticate(self, line): # pylint: disable=R0201
+    def run_authenticate(self, args): # pylint: disable=R0201
         '''
         Authenticate
         '''
-
-        # Parse arguments
-        try:
-            args = self.authparser.parse_args(shlex.split(line))
-        except SystemExit:
-            return
 
         if args.login:
             os.environ['OS_USERNAME'] = args.login
@@ -376,114 +311,28 @@ class Cli(cmd.Cmd):
             os.environ['OS_USERNAME'] = getpass.getuser()
         os.environ['OS_PASSWORD'] = getpass.getpass()
 
-    def help_authenticate(self): # pylint: disable=R0201
-        '''
-        Help with authenticate
-        '''
+    # def complete_edit(self, text, line, begidx, endidx):
+    #     '''
+    #     Complete command for Vim editing
+    #     '''
 
-        self.authparser.print_help()
+    #     return [cmd[3:] for cmd in dir(self)
+    #             if cmd.startswith('do_') and cmd[3:].startswith(text)]
 
-    def do_page(self, line):
-        '''
-        Page last result
-        '''
-
-        # Parse arguments
-        try:
-            args = self.pageparser.parse_args(shlex.split(line))
-        except SystemExit:
-            return
-
-        # Parse 
-        call(['vim', '-n', '+set nowrap titlestring=newstar', self.temp.name])
-        wintitle()
-
-    def help_page(self):
-        '''
-        Help with paging
-        '''
-        self.pageparser.print_help()
-
-    def do_edit(self, line):
-        '''
-        Edit command line
-        '''
-
-        # Parse arguments
-        try:
-            args = self.editparser.parse_args(shlex.split(line))
-        except SystemExit:
-            return
-
-        # Open command line in editor
-        tmpw = tempfile.NamedTemporaryFile(prefix='edit-', dir=DIR)
-        print >> tmpw, line
-        tmpw.flush()
-        call(['vim', '-n', '+set titlestring=newstar', tmpw.name])
-        wintitle()
-
-        # Read edited command line
-        tmpr = open(tmpw.name)
-        line = tmpr.read().strip() # Can't cope with any trailing newline
-
-        def hook():
-            '''
-            Insert text in command line
-            '''
-
-            readline.insert_text(line)
-            readline.redisplay()
-
-        readline.set_pre_input_hook(hook)
-
-    def help_edit(self): # pylint: disable=R0201
-        '''
-        Help with edit
-        '''
-
-        self.editparser.print_help()
-
-    def complete_edit(self, text, line, begidx, endidx):
-        '''
-        Complete command for Vim editing
-        '''
-
-        return [cmd[3:] for cmd in dir(self)
-                if cmd.startswith('do_') and cmd[3:].startswith(text)]
-
-    def do_lstenants(self, line):
+    def run_lstenants(self, args):
         '''
         List known tenants
         '''
-
-        # Parse arguments
-        try:
-            args = self.lstenantsparser.parse_args(shlex.split(line))
-        except SystemExit:
-            return
 
         for service in self.services:
             tenants = self.services[service]['tenants']
             for tenant in tenants:
                 print "'%s' in %s" % (tenant['name'], service.capitalize())
 
-    def help_lstenants(self): # pylint: disable=R0201
-        '''
-        Help with lstenants
-        '''
-
-        self.lstenantsparser.print_help()
-
-    def do_reboot(self, line):
+    def run_reboot(self, args):
         '''
         Reboot VMs
         '''
-
-        # Parse arguments
-        try:
-            args = self.rebootparser.parse_args(shlex.split(line))
-        except SystemExit:
-            return
 
         if not self.authck():
             return
@@ -499,43 +348,23 @@ class Cli(cmd.Cmd):
                 call(['nova', '--os-auth-url', url, '--os-tenant-name', tenant,
                       'reboot'] + (['--hard'] if args.hard else []) + [server])
             except KeyError:
-                print >> sys.stderr, "Couldn't find %s" % server
+                pass
 
         if args.time:
             print time.time() - time0
         print '\a\r',
 
-    def help_reboot(self): # pylint: disable=R0201,C0103
-        '''
-        Help with rebooting
-        '''
+    # def run_EOF(self, _): # pylint: disable=R0201,C0103
+    #     '''
+    #     Handle ^D
+    #     '''
 
-        self.rebootparser.print_help()
+    #     # For some reason the tempfile isn't closed with the object is detroyed
+    #     # FIXME Really? Even with Cli?
+    #     self.temp.close()
 
-    def do_EOF(self, _): # pylint: disable=R0201,C0103
-        '''
-        Handle ^D
-        '''
-
-        # For some reason the tempfile isn't closed with the object is detroyed
-        self.temp.close()
-
-        print
-        sys.exit(0)
-
-    def help_EOF(self): # pylint: disable=R0201,C0103
-        '''
-        Help with EOF
-        '''
-
-        print "Exit. You could also use Ctrl-D."
-
-    def help_help(self): # pylint: disable=R0201
-        '''
-        Help with help
-        '''
-
-        print "Print help"
+    #     print
+    #     sys.exit(0)
 
 def main():
     '''
@@ -544,13 +373,7 @@ def main():
 
     parser = ArgumentParser(description="Nova shell")
     args = parser.parse_args()
-    cli = Cli(args)
-
-    while True:
-        try:
-            cli.cmdloop()
-        except KeyboardInterrupt:
-            print
+    Newstar(args).loop()
 
 if __name__ == '__main__':
     sys.exit(main())
