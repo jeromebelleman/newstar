@@ -42,7 +42,8 @@ def join(queue):
 
 def listworker(vms, listqueue, lock):
     while True:
-        url, service, tenant, doprint, dolserror, verbose = listqueue.get()
+        url, service, tenant, servers, doprint, dolserror, verbose = \
+            listqueue.get()
 
         # Set tenant
         tenant = tenant['name']
@@ -70,14 +71,15 @@ def listworker(vms, listqueue, lock):
                 lock.acquire()
                 vms[server] = service, url, tenant
                 lock.release()
+                match = True
                 if doprint:
                     if dolserror:
-                        if status == 'ERROR':
-                            if verbose:
-                                output += line
-                            else:
-                                output += server + '\n'
-                    else:
+                        match = status == 'ERROR'
+
+                    if servers:
+                        match = server in servers
+
+                    if match:
                         if verbose:
                             output += line
                         else:
@@ -159,6 +161,7 @@ class Cli(cmd.Cmd):
         self.listparser.add_argument('-e', '--error', action='store_true',
                                       help="only display VMs in ERROR state")
         self.listparser.add_argument(*TIMEARGS, **TIMEKWARGS)
+        self.listparser.add_argument(*SERVERARGS, nargs='*')
 
         self.showparser = ArgumentParser(prog='show',
                                          description="Show VM details.")
@@ -246,7 +249,7 @@ class Cli(cmd.Cmd):
         else:
             return True
 
-    def _list(self, doprint, dolserror=False, verbose=False):
+    def _list(self, servers=[], doprint=False, dolserror=False, verbose=False):
         '''
         List VMs
         '''
@@ -255,7 +258,7 @@ class Cli(cmd.Cmd):
             url = self.services[service]['url']
             tenants = self.services[service]['tenants']
             for tenant in tenants:
-                self.listqueue.put((url, service, tenant, doprint,
+                self.listqueue.put((url, service, tenant, servers, doprint,
                                     dolserror, verbose))
 
         join(self.listqueue)
@@ -342,7 +345,8 @@ class Cli(cmd.Cmd):
 
         # List VMs in all tenants of all OpenStack services
         time0 = time.time()
-        self._list(doprint=True, dolserror=args.error, verbose=args.verbose)
+        self._list(args.server, doprint=True, dolserror=args.error,
+                   verbose=args.verbose)
         if args.time:
             print time.time() - time0
 
