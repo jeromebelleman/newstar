@@ -123,13 +123,12 @@ def vmworker(vms, vmqueue, lock, temp):
             if output: # Make sure not empty if KeyboardInterrupted
                 lock.acquire()
                 for fhl in sys.stdout, temp:
-                    print >> fhl, "In %s, %s:" % (tenant, service.capitalize())
+                    print >> fhl, "# In %s, %s:" % \
+                        (tenant, service.capitalize())
                     print >> fhl, output
                 lock.release()
         except KeyError:
-            lock.acquire()
-            print >> sys.stderr, "Couldn't find %s" % server
-            lock.release()
+            pass
         vmqueue.task_done()
 
 class Cli(cmd.Cmd):
