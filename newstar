@@ -18,10 +18,6 @@ import yaml
 # TODO Display ERROR details (+ dates)
 
 DIR = expanduser('~/.newstar')
-TIMEARGS = '-t', '--time'
-TIMEKWARGS = {'action': 'store_true',
-              'help':   "measure time spent in operations",
-             }
 SERVERARGS = 'server',
 SERVERKWARGS = {'nargs': '+'}
 
@@ -55,8 +51,9 @@ def listworker(vms, listqueue, lock):
 
         # Handle header
         for _ in range(3):
+            line = proc.stdout.next()
             if verbose:
-                output += proc.stdout.next()
+                output += line
 
         # Print VMs
         for line in proc.stdout:
@@ -144,7 +141,7 @@ class Newstar(cli.Cli):
         Init CLI
         '''
 
-        cli.Cli.__init__(self, True)
+        cli.Cli.__init__(self, history=True, bell=True, time=True)
 
         # Argument parsers
         self.listparser.add_argument('-v', '--verbose', action='store_true',
@@ -155,24 +152,20 @@ class Newstar(cli.Cli):
                                      help="only display VMs in BUILD state")
         self.listparser.add_argument('-d', '--deleted', action='store_true',
                                      help="only display VMs in DELETED state")
-        self.listparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.listparser.add_argument(*SERVERARGS, nargs='*')
         self.listparser.description = "List VMs."
 
-        self.showparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.showparser.add_argument(*SERVERARGS, **SERVERKWARGS)
         self.showparser.description = "Show VM details."
 
         self.rebootparser.add_argument('--hard', action='store_true',
                                        help="reboot hard")
-        self.rebootparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.rebootparser.add_argument(*SERVERARGS, **SERVERKWARGS)
         self.rebootparser.description = "Reboot VMs."
 
         self.authenticateparser.add_argument('-l', '--login')
         self.authenticateparser.description = "Authenticate against OpenStack."
 
-        self.consoleparser.add_argument(*TIMEARGS, **TIMEKWARGS)
         self.consoleparser.add_argument(*SERVERARGS, **SERVERKWARGS)
         self.consoleparser.description = "Dump console."
 
@@ -250,7 +243,6 @@ class Newstar(cli.Cli):
             return
 
         # Update VM-tenant mapping
-        time0 = time.time()
         if not self.vms:
             self._list(doprint=False)
 
@@ -261,10 +253,6 @@ class Newstar(cli.Cli):
 
         # Wait until queue is drained
         join(self.vmqueue)
-
-        if args.time:
-            print time.time() - time0
-        print '\a\r',
 
     def run_show(self, args):
         '''
@@ -285,20 +273,13 @@ class Newstar(cli.Cli):
         List VMs
         '''
 
-        # TODO Displays the header in the short version
-
         if not self.authck():
             return
 
         # List VMs in all tenants of all OpenStack services
-        time0 = time.time()
         self._list(args.server, doprint=True, dolserror=args.error,
                    dolsbuild=args.build, dolsdeleted=args.deleted,
                    verbose=args.verbose)
-        if args.time:
-            print time.time() - time0
-
-        print '\a\r',
 
     def run_authenticate(self, args): # pylint: disable=R0201
         '''
@@ -310,14 +291,6 @@ class Newstar(cli.Cli):
         else:
             os.environ['OS_USERNAME'] = getpass.getuser()
         os.environ['OS_PASSWORD'] = getpass.getpass()
-
-    # def complete_edit(self, text, line, begidx, endidx):
-    #     '''
-    #     Complete command for Vim editing
-    #     '''
-
-    #     return [cmd[3:] for cmd in dir(self)
-    #             if cmd.startswith('do_') and cmd[3:].startswith(text)]
 
     def run_lstenants(self, args):
         '''
@@ -338,7 +311,6 @@ class Newstar(cli.Cli):
             return
 
         # Update VM-tenant mapping
-        time0 = time.time()
         self._list(doprint=False)
 
         for server in args.server:
@@ -349,22 +321,6 @@ class Newstar(cli.Cli):
                       'reboot'] + (['--hard'] if args.hard else []) + [server])
             except KeyError:
                 pass
-
-        if args.time:
-            print time.time() - time0
-        print '\a\r',
-
-    # def run_EOF(self, _): # pylint: disable=R0201,C0103
-    #     '''
-    #     Handle ^D
-    #     '''
-
-    #     # For some reason the tempfile isn't closed with the object is detroyed
-    #     # FIXME Really? Even with Cli?
-    #     self.temp.close()
-
-    #     print
-    #     sys.exit(0)
 
 def main():
     '''
