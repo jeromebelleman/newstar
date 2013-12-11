@@ -297,10 +297,21 @@ class Newstar(cli.Cli):
         List known tenants
         '''
 
+        # Size up
+        maxtenant = 0
         for service in self.services:
             tenants = self.services[service]['tenants']
             for tenant in tenants:
-                print "'%s' in %s" % (tenant['name'], service.capitalize())
+                length = len(tenant['name'])
+                maxtenant = length if length > maxtenant else maxtenant
+
+        # Print
+        fmt = "{{tenant:{width}}}  {{service}}".format(width=maxtenant)
+        for service in self.services:
+            tenants = self.services[service]['tenants']
+            for tenant in tenants:
+                print fmt.format(tenant=tenant['name'],
+                                 service=service.capitalize())
 
     def run_reboot(self, args):
         '''
