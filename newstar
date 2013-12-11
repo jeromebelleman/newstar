@@ -192,7 +192,7 @@ class Newstar(cli.Cli):
 
         # Start threads to permanently pull VMs to show the info of
         self.vmqueue = Queue.Queue()
-        for _ in range(16): # 16 seems to be the optimal balance
+        for _ in range(self.config['threads']['vm']):
             thread = threading.Thread(target=vmworker,
                                       args=(self.vms, self.vmqueue, self.lock,
                                             self.temp))
@@ -201,7 +201,7 @@ class Newstar(cli.Cli):
 
         # Start threads to permanently list tenants
         self.listqueue = Queue.Queue()
-        for _ in range(8): # Shouldn't ever have more than 8 tenants
+        for _ in range(self.config['threads']['list']):
             thread = threading.Thread(target=listworker,
                                       args=(self.vms, self.listqueue,
                                             self.lock, self.temp))
