@@ -31,7 +31,7 @@ def join(queue):
             queue.task_done()
     queue.join()
 
-def listworker(vms, listqueue, lock):
+def listworker(vms, listqueue, lock, temp):
     while True:
         url, service, tenant, servers, doprint, dolserror, dolsbuild, \
             dolsdeleted, verbose = listqueue.get()
@@ -94,7 +94,8 @@ def listworker(vms, listqueue, lock):
 
         lock.acquire()
         if doprint and output:
-            print output,
+            for fhl in sys.stdout, temp:
+                print >> fhl, output,
         lock.release()
 
         listqueue.task_done()
@@ -203,7 +204,7 @@ class Newstar(cli.Cli):
         for _ in range(8): # Shouldn't ever have more than 8 tenants
             thread = threading.Thread(target=listworker,
                                       args=(self.vms, self.listqueue,
-                                            self.lock))
+                                            self.lock, self.temp))
             thread.daemon = True # Stop thread when parent process ends
             thread.start()
 
@@ -225,6 +226,7 @@ class Newstar(cli.Cli):
         List VMs
         '''
 
+        self.tempreset()
         for service in self.services:
             url = self.services[service]['url']
             tenants = self.services[service]['tenants']
