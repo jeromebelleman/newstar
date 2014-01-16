@@ -124,8 +124,8 @@ def vmworker(vms, vmqueue, lock, temp):
             if output: # Make sure not empty if KeyboardInterrupted
                 lock.acquire()
                 for fhl in sys.stdout, temp:
-                    print >> fhl, "# In %s, %s:" % \
-                        (tenant, service.capitalize())
+                    print >> fhl, "# %s, in %s, %s:" % \
+                        (server, tenant, service.capitalize())
                     print >> fhl, output
                 lock.release()
         except KeyError:
@@ -274,6 +274,8 @@ class Newstar(cli.Cli):
         '''
         List VMs
         '''
+
+        # TODO Doesn't always behave well with interrupts
 
         if not self.authck():
             return
