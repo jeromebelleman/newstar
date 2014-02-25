@@ -16,6 +16,7 @@ import yaml
 
 # TODO Show all VMs and filter by status
 # TODO Display ERROR details (+ dates)
+# TODO Parellelise those commands which aren't yet
 
 DIR = expanduser('~/.newstar')
 SERVERARGS = 'server',
@@ -34,7 +35,7 @@ def join(queue):
 def listworker(vms, listqueue, lock, temp):
     while True:
         url, service, tenant, servers, doprint, dolserror, dolsbuild, \
-            dolsdeleted, verbose = listqueue.get()
+            dolsdeleted, dolsreboot, dolsshutoff, verbose = listqueue.get()
 
         # Set tenant
         tenant = tenant['name']
@@ -63,19 +64,25 @@ def listworker(vms, listqueue, lock, temp):
                 lock.acquire()
                 vms[server] = service, url, tenant
                 lock.release()
-                match = True
+                match = False
                 if doprint:
                     if dolserror:
-                        match = status == 'ERROR'
+                        match |= status == 'ERROR'
 
                     if dolsbuild:
-                        match = status == 'BUILD'
+                        match |= status == 'BUILD'
 
                     if dolsdeleted:
-                        match = status == 'DELETED'
+                        match |= status == 'DELETED'
+
+                    if dolsreboot:
+                        match |= status in ('HARD_REBOOT', 'REBOOT')
+
+                    if dolsshutoff:
+                        match |= status == 'SHUTOFF'
 
                     if servers:
-                        match = server in servers
+                        match |= server in servers
 
                     if match:
                         if verbose:
@@ -102,11 +109,11 @@ def listworker(vms, listqueue, lock, temp):
 
 def vmworker(vms, vmqueue, lock, temp):
     '''
-    VM querying thread worker
+    VM thread worker
     '''
 
     while True:
-        operation, server = vmqueue.get()
+        operation, server, arguments = vmqueue.get()
 
         try:
             service, url, tenant = vms[server]
@@ -114,7 +121,8 @@ def vmworker(vms, vmqueue, lock, temp):
             null = open(os.devnull, 'w')
             # Would receive a KeyboardInterrupt too but that's fine
             proc = Popen(['nova', '--os-auth-url', url, '--os-tenant-name',
-                          tenant, operation, server], stdout=PIPE, stderr=null)
+                          tenant] + operation + [server] + arguments,
+                          stdout=PIPE, stderr=null)
 
             # Wait for process to avoid zombies
             output, _ = proc.communicate()
@@ -153,6 +161,10 @@ class Newstar(cli.Cli):
                                      help="only display VMs in BUILD state")
         self.listparser.add_argument('-d', '--deleted', action='store_true',
                                      help="only display VMs in DELETED state")
+        self.listparser.add_argument('-r', '--reboot', action='store_true',
+                                     help="only display VMs in REBOOT states")
+        self.listparser.add_argument('-s', '--shutoff', action='store_true',
+                                     help="only display VMs in SHUTOFF state")
         self.listparser.add_argument(*SERVERARGS, nargs='*')
         self.listparser.description = "List VMs."
 
@@ -221,7 +233,8 @@ class Newstar(cli.Cli):
             return True
 
     def _list(self, servers=[], doprint=False, dolserror=False, dolsbuild=False,
-              dolsdeleted=False, verbose=False):
+              dolsdeleted=False, dolsreboot=False, dolsshutoff=False,
+              verbose=False):
         '''
         List VMs
         '''
@@ -232,11 +245,12 @@ class Newstar(cli.Cli):
             tenants = self.services[service]['tenants']
             for tenant in tenants:
                 self.listqueue.put((url, service, tenant, servers, doprint,
-                                    dolserror, dolsbuild, dolsdeleted, verbose))
+                                    dolserror, dolsbuild, dolsdeleted,
+                                    dolsreboot, dolsshutoff, verbose))
 
         join(self.listqueue)
 
-    def _queryvm(self, args, operation):
+    def _nudgevm(self, args, operation, arguments=[]):
         '''
         Query on a per-VM basis
         '''
@@ -251,7 +265,7 @@ class Newstar(cli.Cli):
         # Collect requested servers into queue
         self.tempreset()
         for server in args.server:
-            self.vmqueue.put((operation, server))
+            self.vmqueue.put((operation, server, arguments))
 
         # Wait until queue is drained
         join(self.vmqueue)
@@ -261,14 +275,14 @@ class Newstar(cli.Cli):
         Show VMs info
         '''
 
-        self._queryvm(args, 'show')
+        self._nudgevm(args, ['show'])
 
     def run_console(self, args):
         '''
         Dump console
         '''
 
-        self._queryvm(args, 'console-log')
+        self._nudgevm(args, ['console-log'])
 
     def run_list(self, args):
         '''
@@ -283,6 +297,7 @@ class Newstar(cli.Cli):
         # List VMs in all tenants of all OpenStack services
         self._list(args.server, doprint=True, dolserror=args.error,
                    dolsbuild=args.build, dolsdeleted=args.deleted,
+                   dolsreboot=args.reboot, dolsshutoff=args.shutoff,
                    verbose=args.verbose)
 
     def run_authenticate(self, args): # pylint: disable=R0201
