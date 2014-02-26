@@ -17,6 +17,8 @@ import yaml
 # TODO Show all VMs and filter by status
 # TODO Display ERROR details (+ dates)
 # TODO Parellelise those commands which aren't yet
+# TODO Display quotas
+# TODO Fixed dodgy interrupt on some queries
 
 DIR = expanduser('~/.newstar')
 SERVERARGS = 'server',
@@ -337,20 +339,7 @@ class Newstar(cli.Cli):
         Reboot VMs
         '''
 
-        if not self.authck():
-            return
-
-        # Update VM-tenant mapping
-        self._list(doprint=False)
-
-        for server in args.server:
-            try:
-                service, url, tenant = self.vms[server]
-
-                call(['nova', '--os-auth-url', url, '--os-tenant-name', tenant,
-                      'reboot'] + (['--hard'] if args.hard else []) + [server])
-            except KeyError:
-                pass
+        self._nudgevm(args, ['reboot'] + (['--hard'] if args.hard else []))
 
 def main():
     '''
