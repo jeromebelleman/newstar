@@ -66,27 +66,33 @@ def listworker(vms, listqueue, lock, temp):
                 lock.acquire()
                 vms[server] = service, url, tenant
                 lock.release()
-                match = False
+                filtered, match = False, False
                 if doprint:
                     if dolserror:
+                        filtered = True
                         match |= status == 'ERROR'
 
                     if dolsbuild:
+                        filtered = True
                         match |= status == 'BUILD'
 
                     if dolsdeleted:
+                        filtered = True
                         match |= status == 'DELETED'
 
                     if dolsreboot:
+                        filtered = True
                         match |= status in ('HARD_REBOOT', 'REBOOT')
 
                     if dolsshutoff:
+                        filtered = True
                         match |= status == 'SHUTOFF'
 
                     if servers:
+                        filtered = True
                         match |= server in servers
 
-                    if match:
+                    if match or not filtered:
                         if verbose:
                             output += line
                         else:
@@ -134,9 +140,12 @@ def vmworker(vms, vmqueue, lock, temp):
             if output: # Make sure not empty if KeyboardInterrupted
                 lock.acquire()
                 for fhl in sys.stdout, temp:
-                    print >> fhl, "# %s, in %s, %s:" % \
+                    print >> fhl, ">>> %s, in %s, %s:" % \
                         (server, tenant, service.capitalize())
-                    print >> fhl, output
+                    print >> fhl, output.strip()
+                    print >> fhl, "<<< %s, in %s, %s:" % \
+                        (server, tenant, service.capitalize())
+                    print >> fhl
                 lock.release()
         except KeyError:
             pass
