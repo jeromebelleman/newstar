@@ -130,7 +130,7 @@ def vmworker(vms, vmqueue, lock, temp):
             # Would receive a KeyboardInterrupt too but that's fine
             proc = Popen(['nova', '--os-auth-url', url, '--os-tenant-name',
                           tenant] + operation + [server] + arguments,
-                          stdout=PIPE, stderr=null)
+                          stdout=PIPE)
 
             # Wait for process to avoid zombies
             output, _ = proc.communicate()
