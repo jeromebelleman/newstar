@@ -53,10 +53,13 @@ def listworker(vms, listqueue, lock, temp):
             output += "%s, %s:\n" % (tenant, service.capitalize())
 
         # Handle header
-        for _ in range(3):
-            line = proc.stdout.next()
-            if verbose:
-                output += line
+        try:
+            for _ in range(3):
+                line = proc.stdout.next()
+                if verbose:
+                    output += line
+        except StopIteration: # Handle empty projects
+            pass
 
         # Print VMs
         for line in proc.stdout:
