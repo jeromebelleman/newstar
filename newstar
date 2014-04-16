@@ -133,19 +133,20 @@ def vmworker(vms, vmqueue, lock, temp):
             # Would receive a KeyboardInterrupt too but that's fine
             proc = Popen(['nova', '--os-auth-url', url, '--os-tenant-name',
                           tenant] + operation + [server] + arguments,
-                          stdout=PIPE)
+                          stdout=PIPE, stderr=PIPE)
 
             # Wait for process to avoid zombies
-            output, _ = proc.communicate()
+            output, error = proc.communicate()
 
             # Print output
             null.close()
-            if output: # Make sure not empty if KeyboardInterrupted
+            if output or error: # Make sure not empty if KeyboardInterrupted
                 lock.acquire()
                 for fhl in sys.stdout, temp:
                     print >> fhl, ">>> %s, in %s, %s:" % \
                         (server, tenant, service.capitalize())
                     print >> fhl, output.strip()
+                    print >> fhl, error.strip()
                     print >> fhl, "<<< %s, in %s, %s:" % \
                         (server, tenant, service.capitalize())
                     print >> fhl
