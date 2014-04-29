@@ -112,8 +112,10 @@ def listworker(vms, listqueue, lock, temp):
 
         lock.acquire()
         if doprint and output:
-            for fhl in sys.stdout, temp:
+            tempfhl = open(temp, 'a')
+            for fhl in sys.stdout, tempfhl:
                 print >> fhl, output,
+            tempfhl.close()
         lock.release()
 
         listqueue.task_done()
@@ -142,7 +144,8 @@ def vmworker(vms, vmqueue, lock, temp):
             null.close()
             if output or error: # Make sure not empty if KeyboardInterrupted
                 lock.acquire()
-                for fhl in sys.stdout, temp:
+                tempfhl = open(temp, 'a')
+                for fhl in sys.stdout, tempfhl:
                     print >> fhl, ">>> %s, in %s, %s:" % \
                         (server, tenant, service.capitalize())
                     print >> fhl, output.strip()
@@ -150,6 +153,7 @@ def vmworker(vms, vmqueue, lock, temp):
                     print >> fhl, "<<< %s, in %s, %s:" % \
                         (server, tenant, service.capitalize())
                     print >> fhl
+                tempfhl.close()
                 lock.release()
         except KeyError:
             pass
