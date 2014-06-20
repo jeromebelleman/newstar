@@ -36,15 +36,18 @@ def join(queue):
 
 def listworker(vms, listqueue, lock, temp):
     while True:
-        url, service, tenant, servers, doprint, dolserror, dolsbuild, \
+        url, service, tenant, servers, errors, doprint, dolserror, dolsbuild, \
             dolsdeleted, dolsreboot, dolsshutoff, verbose = listqueue.get()
 
         # Set tenant
         tenant = tenant['name']
 
+        null = open(os.devnull, 'w')
         # Run nova
+        # Does sending stderr to /dev/null solve the KeyboardInterrupt
+        # hanging problem?
         proc = Popen(['nova', '--os-auth-url', url, '--os-tenant-name', tenant,
-                      'list'], stdout=PIPE)
+                      'list'], stdout=PIPE, stderr=null)
 
         output = ''
 
@@ -106,6 +109,12 @@ def listworker(vms, listqueue, lock, temp):
 
         # Wait for process to avoid zombies
         proc.communicate()
+        null.close()
+
+        if proc.returncode != 0:
+            lock.acquire()
+            errors.append(tenant)
+            lock.release()
 
         if verbose:
             output += '\n'
@@ -259,15 +268,19 @@ class Newstar(cli.Cli):
         '''
 
         self.tempreset()
+        errors = []
         for service in self.services:
             url = self.services[service]['url']
             tenants = self.services[service]['tenants']
             for tenant in tenants:
-                self.listqueue.put((url, service, tenant, servers, doprint,
-                                    dolserror, dolsbuild, dolsdeleted,
+                self.listqueue.put((url, service, tenant, servers, errors,
+                                    doprint, dolserror, dolsbuild, dolsdeleted,
                                     dolsreboot, dolsshutoff, verbose))
 
         join(self.listqueue)
+
+        for error in errors:
+            print >> sys.stderr, "Couldn't list VMs in %s" % error
 
     def _nudgevm(self, args, operation, arguments=[]):
         '''
