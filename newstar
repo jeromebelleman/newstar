@@ -14,17 +14,23 @@ import getpass
 import threading, Queue
 import yaml
 
+# FIXME Stop being confused with openrc's environment variables
+
 # TODO Show all VMs and filter by status
 # TODO Display ERROR details (+ dates)
 # TODO Parellelise those commands which aren't yet
 # TODO Display quotas
-# TODO Fixed dodgy interrupt on some queries
 
 DIR = expanduser('~/.newstar')
 SERVERARGS = 'server',
 SERVERKWARGS = {'nargs': '+'}
+TRACEBACK = 'Traceback (most recent call last):'
 
 def join(queue):
+    '''
+    Wait for drained operation queue
+    '''
+
     try:
         while not queue.empty():
             time.sleep(1) # Interruptible
@@ -34,13 +40,29 @@ def join(queue):
             queue.task_done()
     queue.join()
 
+def authck():
+    '''
+    Check if user has authenticated
+    '''
+
+    # Check authentication
+    if 'OS_PASSWORD' not in os.environ:
+        print >> sys.stderr, "You need to authenticate first"
+        return False
+    else:
+        return True
+
 def listworker(vms, listqueue, lock, temp):
+    '''
+    List VMs
+    '''
+
     while True:
         url, service, tenant, servers, errors, doprint, dolserror, dolsbuild, \
             dolsdeleted, dolsreboot, dolsshutoff, verbose = listqueue.get()
 
         # Set tenant
-        tenant = tenant['name']
+        tenant, tenantid = tenant['name'], tenant['id']
 
         null = open(os.devnull, 'w')
         # Run nova
@@ -70,7 +92,7 @@ def listworker(vms, listqueue, lock, temp):
                 server = line.split('|')[2].strip()
                 status = line.split('|')[3].strip()
                 lock.acquire()
-                vms[server] = service, url, tenant
+                vms[server] = service, url, tenant, tenantid
                 lock.release()
                 filtered, match = False, False
                 if doprint:
@@ -138,7 +160,7 @@ def vmworker(vms, vmqueue, lock, temp):
         operation, server, arguments = vmqueue.get()
 
         try:
-            service, url, tenant = vms[server]
+            service, url, tenant, _ = vms[server]
 
             null = open(os.devnull, 'w')
             # Would receive a KeyboardInterrupt too but that's fine
@@ -151,14 +173,21 @@ def vmworker(vms, vmqueue, lock, temp):
 
             # Print output
             null.close()
+            output = output.strip()
+            error = error.strip()
             if output or error: # Make sure not empty if KeyboardInterrupted
                 lock.acquire()
                 tempfhl = open(temp, 'a')
                 for fhl in sys.stdout, tempfhl:
                     print >> fhl, ">>> %s, in %s, %s:" % \
                         (server, tenant, service.capitalize())
-                    print >> fhl, output.strip()
-                    print >> fhl, error.strip()
+
+                    if output:
+                        print >> fhl, output
+
+                    if error and TRACEBACK not in error:
+                        print >> fhl, error
+
                     print >> fhl, "<<< %s, in %s, %s:" % \
                         (server, tenant, service.capitalize())
                     print >> fhl
@@ -173,7 +202,7 @@ class Newstar(cli.Cli):
     CLI
     '''
 
-    def __init__(self, args):
+    def __init__(self, _):
         '''
         Init CLI
         '''
@@ -248,19 +277,7 @@ class Newstar(cli.Cli):
             thread.daemon = True # Stop thread when parent process ends
             thread.start()
 
-    def authck(self):
-        '''
-        Check if user has authenticated
-        '''
-
-        # Check authentication
-        if 'OS_PASSWORD' not in os.environ:
-            print >> sys.stderr, "You need to authenticate first"
-            return False
-        else:
-            return True
-
-    def _list(self, servers=[], doprint=False, dolserror=False, dolsbuild=False,
+    def _list(self, servers, doprint=False, dolserror=False, dolsbuild=False,
               dolsdeleted=False, dolsreboot=False, dolsshutoff=False,
               verbose=False):
         '''
@@ -282,17 +299,17 @@ class Newstar(cli.Cli):
         for error in errors:
             print >> sys.stderr, "Couldn't list VMs in %s" % error
 
-    def _nudgevm(self, args, operation, arguments=[]):
+    def _nudgevm(self, args, operation, arguments):
         '''
         Query on a per-VM basis
         '''
 
-        if not self.authck():
+        if not authck():
             return
 
         # Update VM-tenant mapping
         if not self.vms:
-            self._list(doprint=False)
+            self._list([], doprint=False)
 
         # Collect requested servers into queue
         self.tempreset()
@@ -307,23 +324,21 @@ class Newstar(cli.Cli):
         Show VMs info
         '''
 
-        self._nudgevm(args, ['show'])
+        self._nudgevm(args, ['show'], [])
 
     def run_console(self, args):
         '''
         Dump console
         '''
 
-        self._nudgevm(args, ['console-log'])
+        self._nudgevm(args, ['console-log'], [])
 
     def run_list(self, args):
         '''
         List VMs
         '''
 
-        # TODO Doesn't always behave well with interrupts
-
-        if not self.authck():
+        if not authck():
             return
 
         # List VMs in all tenants of all OpenStack services
@@ -332,7 +347,7 @@ class Newstar(cli.Cli):
                    dolsreboot=args.reboot, dolsshutoff=args.shutoff,
                    verbose=args.verbose)
 
-    def run_authenticate(self, args): # pylint: disable=R0201
+    def run_authenticate(self, args): # pylint: disable=no-self-use
         '''
         Authenticate
         '''
@@ -343,7 +358,7 @@ class Newstar(cli.Cli):
             os.environ['OS_USERNAME'] = getpass.getuser()
         os.environ['OS_PASSWORD'] = getpass.getpass()
 
-    def run_lstenants(self, args):
+    def run_lstenants(self, _):
         '''
         List known tenants
         '''
@@ -369,7 +384,7 @@ class Newstar(cli.Cli):
         Reboot VMs
         '''
 
-        self._nudgevm(args, ['reboot'] + (['--hard'] if args.hard else []))
+        self._nudgevm(args, ['reboot'] + (['--hard'] if args.hard else []), [])
 
 def main():
     '''
