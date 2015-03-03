@@ -247,8 +247,12 @@ class Newstar(cli.Cli):
             if var in os.environ:
                 del os.environ[var]
 
-        # Config file
-        yamlfile = self.directory + '/newstar.yaml'
+        # Config files
+        if '-' in sys.argv[0]:
+            _, service = sys.argv[0].split('-')
+            yamlfile = '/etc/newstar/%s.yaml' % service
+        else:
+            yamlfile = self.directory + '/newstar.yaml'
         if os.path.exists(yamlfile):
             self.config = yaml.load(open(yamlfile))
             self.services = self.config['services']
