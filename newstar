@@ -217,7 +217,7 @@ class Newstar(cli.Cli):
         self.listparser.add_argument('-d', '--deleted', action='store_true',
                                      help="only display VMs in DELETED state")
         self.listparser.add_argument('-r', '--reboot', action='store_true',
-                                     help="only display VMs in REBOOT states")
+                                     help="only display VMs in REBOOT state")
         self.listparser.add_argument('-s', '--shutoff', action='store_true',
                                      help="only display VMs in SHUTOFF state")
         self.listparser.add_argument(*SERVERARGS, nargs='*')
