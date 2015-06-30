@@ -6,7 +6,7 @@ OpenStack Nova shell, taking an excuse to make usability improvements
 
 import os, sys
 from os.path import expanduser
-from subprocess import Popen, PIPE, call
+from subprocess import Popen, PIPE, call, check_call, CalledProcessError
 import time
 import cli
 from argparse import ArgumentParser
@@ -17,7 +17,6 @@ import yaml
 # TODO Show all VMs and filter by status
 # TODO Display ERROR details (+ dates)
 # TODO Parellelise those commands which aren't yet
-# TODO Display quotas
 
 DIR = expanduser('~/.newstar')
 SERVERARGS = 'server',
@@ -66,8 +65,9 @@ def listworker(vms, listqueue, lock, temp):
         # Run nova
         # Does sending stderr to /dev/null solve the KeyboardInterrupt
         # hanging problem?
-        proc = Popen(['nova', '--os-auth-url', url, '--os-tenant-name', tenant,
-                      'list'], stdout=PIPE, stderr=null)
+        proc = Popen(['/usr/bin/nova', '--os-auth-url', url,
+                      '--os-tenant-name', tenant, 'list'],
+                     stdout=PIPE, stderr=null)
 
         output = ''
 
@@ -149,6 +149,46 @@ def listworker(vms, listqueue, lock, temp):
 
         listqueue.task_done()
 
+def tenantworker(tenantqueue, lock, temp):
+    '''
+    Perform tenant operations
+    '''
+
+    while True:
+        url, service, tenant, operation = tenantqueue.get()
+
+        # Set tenant
+        tenant = tenant['name']
+
+        proc = Popen(['/usr/bin/nova', '--os-auth-url', url,
+                     '--os-tenant-name', tenant, operation], stdout=PIPE,
+                     stderr=PIPE)
+
+        # Wait for process to avoid zombies
+        output, error = proc.communicate()
+
+        # Print output
+        output = output.strip()
+        error = error.strip()
+        if output or error: # Make sure not empty if KeyboardInterrupted
+            lock.acquire()
+            tempfhl = open(temp, 'a')
+            for fhl in sys.stdout, tempfhl:
+                print >> fhl, ">>> %s, %s:" % (tenant, service.capitalize())
+
+                if output:
+                    print >> fhl, output
+
+                if error and TRACEBACK not in error:
+                    print >> fhl, error
+
+                print >> fhl, "<<< %s, %s:" % (tenant, service.capitalize())
+                print >> fhl
+            tempfhl.close()
+            lock.release()
+
+        tenantqueue.task_done()
+
 def vmworker(vms, vmqueue, lock, temp):
     '''
     VM thread worker
@@ -160,11 +200,12 @@ def vmworker(vms, vmqueue, lock, temp):
         try:
             service, url, tenant, _ = vms[server]
 
-            null = open(os.devnull, 'w')
+            null = open(os.devnull, 'w') # FIXME Unused?
             # Would receive a KeyboardInterrupt too but that's fine
-            proc = Popen(['nova', '--os-auth-url', url, '--os-tenant-name',
-                          tenant] + operation + [server] + arguments,
-                          stdout=PIPE, stderr=PIPE)
+            proc = Popen(['/usr/bin/nova', '--os-auth-url', url,
+                          '--os-tenant-name', tenant] + operation + \
+                         [server] + arguments,
+                         stdout=PIPE, stderr=PIPE)
 
             # Wait for process to avoid zombies
             output, error = proc.communicate()
@@ -274,10 +315,19 @@ class Newstar(cli.Cli):
 
         # Start threads to permanently list tenants
         self.listqueue = Queue.Queue()
-        for _ in range(self.config['threads']['list']):
+        for _ in range(self.config['threads']['tenant']):
             thread = threading.Thread(target=listworker,
                                       args=(self.vms, self.listqueue,
                                             self.lock, self.temp))
+            thread.daemon = True # Stop thread when parent process ends
+            thread.start()
+
+        # Start threads to permanently perform tenant operations
+        self.tenantqueue = Queue.Queue()
+        for _ in range(self.config['threads']['tenant']):
+            thread = threading.Thread(target=tenantworker,
+                                      args=(self.tenantqueue, self.lock,
+                                            self.temp))
             thread.daemon = True # Stop thread when parent process ends
             thread.start()
 
@@ -362,6 +412,23 @@ class Newstar(cli.Cli):
             os.environ['OS_USERNAME'] = getpass.getuser()
         os.environ['OS_PASSWORD'] = getpass.getpass()
 
+        # Check credentials
+        null = open(os.devnull, 'w')
+        try:
+            service = self.services.values()[0]
+            check_call(['/usr/bin/nova',
+                        '--os-auth-url', service['url'],
+                        '--os-tenant-name', service['tenants'][0]['name'],
+                        'credentials'], stdout=null)
+        except KeyError, exc:
+            # Cowardly pretend the authentication succeeded if there's
+            # no listed tenant to check from.
+            pass
+        except CalledProcessError:
+            # Let stderr be printed
+            pass
+        null.close()
+
     def run_lstenants(self, _):
         '''
         List known tenants
@@ -389,6 +456,23 @@ class Newstar(cli.Cli):
         '''
 
         self._nudgevm(args, ['reboot'] + (['--hard'] if args.hard else []), [])
+
+    def run_limits(self, args):
+        '''
+        List limits
+        '''
+
+        if not authck():
+            return
+
+        self.tempreset()
+        for service in self.services:
+            url = self.services[service]['url']
+            tenants = self.services[service]['tenants']
+            for tenant in tenants:
+                self.tenantqueue.put((url, service, tenant, 'absolute-limits'))
+
+        join(self.tenantqueue)
 
 def main():
     '''
