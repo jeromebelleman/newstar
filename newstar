@@ -6,11 +6,10 @@ OpenStack Nova shell, taking an excuse to make usability improvements
 
 import os, sys
 from os.path import expanduser
-from subprocess import Popen, PIPE, call, check_call, CalledProcessError
+from subprocess import Popen, PIPE, call
 import time
 import cli
 from argparse import ArgumentParser
-import getpass
 import threading, Queue
 import yaml
 
@@ -37,18 +36,6 @@ def join(queue):
             queue.task_done()
     queue.join()
 
-def authck():
-    '''
-    Check if user has authenticated
-    '''
-
-    # Check authentication
-    if 'OS_PASSWORD' not in os.environ:
-        print >> sys.stderr, "You need to authenticate first"
-        return False
-    else:
-        return True
-
 def listworker(vms, listqueue, lock, temp):
     '''
     List VMs
@@ -65,8 +52,8 @@ def listworker(vms, listqueue, lock, temp):
         # Run nova
         # Does sending stderr to /dev/null solve the KeyboardInterrupt
         # hanging problem?
-        proc = Popen(['/usr/bin/nova', '--os-auth-url', url,
-                      '--os-tenant-name', tenant, 'list'],
+        proc = Popen(['/usr/bin/openstack', '--os-tenant-name', tenant,
+                      'server', 'list'],
                      stdout=PIPE, stderr=null)
 
         output = ''
@@ -155,14 +142,13 @@ def tenantworker(tenantqueue, lock, temp):
     '''
 
     while True:
-        url, service, tenant, operation = tenantqueue.get()
+        _, service, tenant, operation = tenantqueue.get()
 
         # Set tenant
         tenant = tenant['name']
 
-        proc = Popen(['/usr/bin/nova', '--os-auth-url', url,
-                     '--os-tenant-name', tenant, operation], stdout=PIPE,
-                     stderr=PIPE)
+        proc = Popen(['/usr/bin/openstack', '--os-tenant-name', tenant] + \
+                     operation, stdout=PIPE, stderr=PIPE)
 
         # Wait for process to avoid zombies
         output, error = proc.communicate()
@@ -198,20 +184,17 @@ def vmworker(vms, vmqueue, lock, temp):
         operation, server, arguments = vmqueue.get()
 
         try:
-            service, url, tenant, _ = vms[server]
+            service, _, tenant, _ = vms[server]
 
-            null = open(os.devnull, 'w') # FIXME Unused?
             # Would receive a KeyboardInterrupt too but that's fine
-            proc = Popen(['/usr/bin/nova', '--os-auth-url', url,
-                          '--os-tenant-name', tenant] + operation + \
-                         [server] + arguments,
+            proc = Popen(['/usr/bin/openstack', '--os-tenant-name', tenant] + \
+                         operation + [server] + arguments,
                          stdout=PIPE, stderr=PIPE)
 
             # Wait for process to avoid zombies
             output, error = proc.communicate()
 
             # Print output
-            null.close()
             output = output.strip()
             error = error.strip()
             if output or error: # Make sure not empty if KeyboardInterrupted
@@ -272,9 +255,6 @@ class Newstar(cli.Cli):
         self.rebootparser.add_argument(*SERVERARGS, **SERVERKWARGS)
         self.rebootparser.description = "Reboot VMs."
 
-        self.authenticateparser.add_argument('-l', '--login')
-        self.authenticateparser.description = "Authenticate against OpenStack."
-
         self.consoleparser.add_argument(*SERVERARGS, **SERVERKWARGS)
         self.consoleparser.description = "Dump console."
 
@@ -300,6 +280,12 @@ class Newstar(cli.Cli):
         else:
             print >> sys.stderr, "Couldn't find %s" % yamlfile
             sys.exit(1)
+
+        # Config backwards compatibility
+        try:
+            self.config['threads']['tenant'] = self.config['threads']['list']
+        except KeyError:
+            pass
 
         # Common thread objects
         self.lock = threading.Lock()
@@ -358,9 +344,6 @@ class Newstar(cli.Cli):
         Query on a per-VM basis
         '''
 
-        if not authck():
-            return
-
         # Update VM-tenant mapping
         if not self.vms:
             self._list([], doprint=False)
@@ -378,56 +361,25 @@ class Newstar(cli.Cli):
         Show VMs info
         '''
 
-        self._nudgevm(args, ['show'], [])
+        self._nudgevm(args, ['server', 'show'], [])
 
     def run_console(self, args):
         '''
         Dump console
         '''
 
-        self._nudgevm(args, ['console-log'], [])
+        self._nudgevm(args, ['console', 'log', 'show'], [])
 
     def run_list(self, args):
         '''
         List VMs
         '''
 
-        if not authck():
-            return
-
         # List VMs in all tenants of all OpenStack services
         self._list(args.server, doprint=True, dolserror=args.error,
                    dolsbuild=args.build, dolsdeleted=args.deleted,
                    dolsreboot=args.reboot, dolsshutoff=args.shutoff,
                    verbose=args.verbose)
-
-    def run_authenticate(self, args): # pylint: disable=no-self-use
-        '''
-        Authenticate
-        '''
-
-        if args.login:
-            os.environ['OS_USERNAME'] = args.login
-        else:
-            os.environ['OS_USERNAME'] = getpass.getuser()
-        os.environ['OS_PASSWORD'] = getpass.getpass()
-
-        # Check credentials
-        null = open(os.devnull, 'w')
-        try:
-            service = self.services.values()[0]
-            check_call(['/usr/bin/nova',
-                        '--os-auth-url', service['url'],
-                        '--os-tenant-name', service['tenants'][0]['name'],
-                        'credentials'], stdout=null)
-        except KeyError, exc:
-            # Cowardly pretend the authentication succeeded if there's
-            # no listed tenant to check from.
-            pass
-        except CalledProcessError:
-            # Let stderr be printed
-            pass
-        null.close()
 
     def run_lstenants(self, _):
         '''
@@ -455,22 +407,24 @@ class Newstar(cli.Cli):
         Reboot VMs
         '''
 
-        self._nudgevm(args, ['reboot'] + (['--hard'] if args.hard else []), [])
+        self._nudgevm(args,
+                      ['server', 'reboot'] + (['--hard'] if args.hard else []),
+                      [])
 
-    def run_limits(self, args):
+    def run_limits(self, _):
         '''
         List limits
         '''
-
-        if not authck():
-            return
 
         self.tempreset()
         for service in self.services:
             url = self.services[service]['url']
             tenants = self.services[service]['tenants']
             for tenant in tenants:
-                self.tenantqueue.put((url, service, tenant, 'absolute-limits'))
+                self.tenantqueue.put((url,
+                                      service,
+                                      tenant,
+                                      ['limits', 'show', '--absolute']))
 
         join(self.tenantqueue)
 
