@@ -1,0 +1,74 @@
+.TH "NEWSTAR" "1" "July 2016" "" ""
+.hy
+.SH NAME
+.PP
+newstar \[en] Nova shell
+.SH DESCRIPTION
+.PP
+This CLI allows you to manage OpenStack VMs and attempts to make tenants
+transparent by keeping a mapping between VMs and their tenants.
+You may then query information about or perform operations on VMs
+without having to care about which tenant they belong to.
+.PP
+This tool is brutal.
+It aims at speeding up communication with the OpenStack service by
+running queries in parallel.
+You may want to use it sparingly.
+.SH SETUP
+.PP
+Running the \f[B]newstar\f[] command will create the \f[B]~/.newstar\f[]
+directory where it will keep command output pages and command history.
+In addition to this it will expect to find the
+\f[B]~/.newstar/newstar.yaml\f[] file where OpenStack tenants and
+\f[B]newstar\f[] settings are to be defined.
+For instance:
+.IP
+.nf
+\f[C]
+services:
+\ \ \ \ corge:
+\ \ \ \ \ \ \ \ url:\ \ \ \ https://openstack.example.net:5000/v2.0
+\ \ \ \ \ \ \ \ tenants:
+\ \ \ \ \ \ \ \ \ \ \ \ \-\ id:\ \ \ \ \ 01234567\-89ab\-cdef\-0123\-456789abcdef
+\ \ \ \ \ \ \ \ \ \ \ \ \ \ name:\ \ \ Foo
+
+\ \ \ \ \ \ \ \ \ \ \ \ \-\ id:\ \ \ \ \ 1234567\-89ab\-cdef\-0123\-456789abcdef0
+\ \ \ \ \ \ \ \ \ \ \ \ \ \ name:\ \ \ Bar
+
+\ \ \ \ \ \ \ \ \ \ \ \ \-\ id:\ \ \ \ \ 234567\-89ab\-cdef\-0123\-456789abcdef01
+\ \ \ \ \ \ \ \ \ \ \ \ \ \ name:\ \ \ Baz
+
+threads:
+\ \ \ \ vm:\ \ \ \ \ \ \ \ \ 16\ #\ 16\ seems\ to\ be\ the\ optimal\ balance
+\ \ \ \ tenant:\ \ \ \ \ 16\ #\ Should\ be\ more\ than\ the\ number\ of\ tenants
+\f[]
+.fi
+.PP
+The \f[B]threads\f[] section specifies the number of threads which
+should be querying the OpenStack service for VM information
+(\f[B]vm\f[]) and VM lists (\f[B]list\f[]).
+.PP
+If they have been installed on your system, \f[B]newstar\f[] symbolic
+links of the form \f[B]newstar\-foo\f[] will instead use the
+\f[B]/etc/newstar/foo.yaml\f[] configuration file.
+.SH COMMANDS
+.PP
+Starting \f[B]newstar\f[] without options will launch the shell.
+The available commands can be displayed with the \f[B]help\f[] (or
+\f[B]?\f[]) command.
+.PP
+The \f[B]list\f[] command lists VMs which have been found in the
+different tenants specified in the configuration file.
+It also updates the tenant\-VM mappings everywhere.
+The \f[B]lstenants\f[] command lists the known tenants.
+The \f[B]limits\f[] command lists quota and usage in all known tenants.
+The \f[B]show\f[], \f[B]reboot\f[] and \f[B]console\f[]
+commands use the mappings populated by \f[B]list\f[].
+If they cannot find any of the specified VMs, you might need to run
+\f[B]list\f[] again.
+.PP
+The \f[B]edit\f[] command lets you edit a command line with Vim.
+The \f[B]page\f[] command pages in Vim the output of the last
+\f[B]show\f[], \f[B]list\f[] or \f[B]console\f[] commands.
+.SH AUTHORS
+Jérôme Belleman <Jerome.Belleman@gmail.com>.
