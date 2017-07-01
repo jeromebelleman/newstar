@@ -1,3 +1,8 @@
+What's strangely missing in OpenStack, is a convenient way to make tenants
+transparent. Newstar is a command line interface attempting to keep track of
+VMs in their respective tenants and takes the opportunity to query each of them
+in parallel.  Another example where querying a service in parallel is faster.
+
 # NAME
 
 newstar – Nova shell
